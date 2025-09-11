@@ -111,7 +111,10 @@ def create_dataset(
     """
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     name = name.lower()
-    if name.startswith('torch/'):
+    if name == 'rsna2025':
+        from .rsna2025 import RSNADataset
+        return RSNADataset(root,series_dir=split)
+    elif name.startswith('torch/'):
         name = name.split('/', 2)[-1]
         torch_kwargs = dict(root=root, download=download, **kwargs)
         if name in _TORCH_BASIC_DS:

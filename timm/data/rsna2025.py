@@ -427,11 +427,11 @@ class RSNADataset(Dataset):
         
         # 加载图像和标签
         for uid in tqdm(self.selected_uids, desc='Loading DICOM series'):
-            image = self._load_image(os.path.join(series_dir, uid))  
             labels = self.sample_df[self.sample_df['SeriesInstanceUID'] == uid][self.LABEL_COLS].values
             
             # 如果使用缓存，则将图像和标签存储到内存
             if self.use_cache:
+                image = self._load_image(os.path.join(series_dir, uid))  
                 self.series_paths.append(image)
                 self.labels.append(labels)
             else:
@@ -467,5 +467,4 @@ class RSNADataset(Dataset):
         
         # 将标签转换为 tensor
         labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze(0)
-
         return volume, labels_tensor

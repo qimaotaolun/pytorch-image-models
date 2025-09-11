@@ -82,13 +82,19 @@ group = parser.add_argument_group('Dataset parameters')
 # Keep this argument outside the dataset group because it is positional.
 parser.add_argument('data', nargs='?', metavar='DIR', const=None,
                     help='path to dataset (positional is *deprecated*, use --data-dir)')
+
+
 group.add_argument('--data-dir', metavar='DIR',
                     help='path to dataset (root dir)')
-group.add_argument('--dataset', metavar='NAME', default='',
+group.add_argument('--dataset', metavar='NAME', default='RSNA2025',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
+group.add_argument('--series_dir', metavar='DIR', default='',
+                    help='path to series dataset (root dir)')
+
+
 group.add_argument('--train-split', metavar='NAME', default='train',
                    help='dataset train split (default: train)')
-group.add_argument('--val-split', metavar='NAME', default='validation',
+group.add_argument('--val-split', metavar='NAME', default=None,
                    help='dataset validation split (default: validation)')
 group.add_argument('--train-num-samples', default=None, type=int,
                     metavar='N', help='Manually specify num samples in train split, for IterableDatasets.')
@@ -695,6 +701,7 @@ def main():
         target_key=args.target_key,
         num_samples=args.train_num_samples,
         trust_remote_code=args.dataset_trust_remote_code,
+        series_dir = args.series_dir
     )
 
     dataset_eval = None

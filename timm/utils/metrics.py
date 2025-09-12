@@ -75,7 +75,7 @@ def accuracy(
         
     # Get AUC for each class
     try:
-        y_scores = np.nan_to_num(y_scores,nan=0)
+        y_scores = np.nan_to_num(y_scores,nan=0.5)
         individual_aucs = roc_auc_score(y_true, y_scores, average=None)
         individual_aucs = np.nan_to_num(individual_aucs,nan=0)
         # individual_accuracies = (y_true == (y_scores>threshold)).astype(int)

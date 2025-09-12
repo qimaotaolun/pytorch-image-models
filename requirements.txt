@@ -4,9 +4,6 @@ pyyaml
 huggingface_hub
 safetensors>=0.2
 numpy
-scipy
-pydicom
 tqdm
 albumentations
 pandas
-opencv-python

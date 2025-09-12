@@ -6,6 +6,7 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import numpy as np
 from tqdm import tqdm
+from sklearn.model_selection import KFold
 
 # 你可以在这个地方定义 CFG 和尺寸等全局配置
 class CFG:
@@ -20,7 +21,7 @@ def get_inference_transform():
     ])
 
 class RSNADataset(Dataset):
-    def __init__(self, train_csv, series_dir, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
+    def __init__(self, train_csv, series_dir, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
         # 读取 CSV 文件
         self.train_df = pd.read_csv(train_csv)
         
@@ -59,6 +60,24 @@ class RSNADataset(Dataset):
         
         # 默认使用的变换
         self.transform = transform if transform else get_inference_transform()
+        
+        # 5-fold交叉验证
+        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+        self.fold_splits = list(kf.split(self.selected_uids))
+        
+        # 获取当前 fold 的训练集和测试集索引
+        train_idx, test_idx = self.fold_splits[fold]
+        
+        # 根据参数选择训练集或测试集
+        if split == 'train':
+            selected_idx = train_idx
+        elif split == 'validation':
+            selected_idx = test_idx
+        else:
+            raise ValueError(f"train_or_test must be 'train' or 'validation', but got {split}")
+
+        # 获取当前fold的UIDs
+        self.selected_uids = [self.selected_uids[i] for i in selected_idx]
         
         # 加载图像和标签
         # if not os.path.exists('kaggle/working/preprogress/series'):

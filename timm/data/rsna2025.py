@@ -75,7 +75,7 @@ class RSNADataset(Dataset):
                 self.labels.append(labels)
             else:
                 # 如果不使用缓存，仅存储路径
-                self.series_paths.append(os.path.join(series_dir, uid))
+                self.series_paths.append(os.path.join(series_dir, f'{uid}.npy'))
                 self.labels.append(labels)
         
     def _load_image(self, image_path):
@@ -108,5 +108,4 @@ class RSNADataset(Dataset):
         # 将标签转换为 tensor
         labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze(0)
         
-
         return volume, labels_tensor

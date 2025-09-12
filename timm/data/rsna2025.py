@@ -20,7 +20,7 @@ def get_inference_transform():
     ])
 
 class RSNADataset(Dataset):
-    def __init__(self, train_csv, series_dir, num_limit=-1, use_cache=True, target_shape=(32, 384, 384), transform=None):
+    def __init__(self, train_csv, series_dir, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
         # 读取 CSV 文件
         self.train_df = pd.read_csv(train_csv)
         
@@ -108,4 +108,5 @@ class RSNADataset(Dataset):
         # 将标签转换为 tensor
         labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze(0)
         
+
         return volume, labels_tensor

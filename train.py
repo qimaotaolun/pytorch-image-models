@@ -25,6 +25,8 @@ from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
 from functools import partial
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 import torch
 import torch.nn as nn
@@ -90,6 +92,8 @@ group.add_argument('--dataset', metavar='NAME', default='RSNA2025',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
 group.add_argument('--series_dir', metavar='DIR', default='',
                     help='path to series dataset (root dir)')
+group.add_argument('--fold', default=0, type=int, metavar='N',
+                   help='fold number')
 
 
 group.add_argument('--train-split', metavar='NAME', default='train',
@@ -690,6 +694,9 @@ def main():
         args.dataset,
         root=args.data_dir,
         split=args.train_split,
+        series_dir = args.series_dir,
+        fold=args.fold,
+        use_cache=args.use_cache,
         is_training=True,
         class_map=args.class_map,
         download=args.dataset_download,
@@ -701,7 +708,6 @@ def main():
         target_key=args.target_key,
         num_samples=args.train_num_samples,
         trust_remote_code=args.dataset_trust_remote_code,
-        series_dir = args.series_dir
     )
 
     dataset_eval = None
@@ -710,6 +716,9 @@ def main():
             args.dataset,
             root=args.data_dir,
             split=args.val_split,
+            series_dir = args.series_dir,
+            fold=args.fold,
+            use_cache=args.use_cache,
             is_training=False,
             class_map=args.class_map,
             download=args.dataset_download,
@@ -1322,8 +1331,8 @@ def validate(
 ):
     batch_time_m = utils.AverageMeter()
     losses_m = utils.AverageMeter()
-    top1_m = utils.AverageMeter()
-    top5_m = utils.AverageMeter()
+    final_score_m = utils.AverageMeter()
+    classes_m = [utils.AverageMeter() for _ in range(14)]
 
     model.eval()
 
@@ -1350,12 +1359,12 @@ def validate(
                     target = target[0:target.size(0):reduce_factor]
 
                 loss = loss_fn(output, target)
-            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            final_score, auc_scores = utils.accuracy(torch.sigmoid(output).cpu().numpy(), target.cpu().numpy())
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
-                acc1 = utils.reduce_tensor(acc1, args.world_size)
-                acc5 = utils.reduce_tensor(acc5, args.world_size)
+                final_score = utils.reduce_tensor(final_score, args.world_size)
+                auc_scores = utils.reduce_tensor(auc_scores, args.world_size)
             else:
                 reduced_loss = loss.data
 
@@ -1366,9 +1375,9 @@ def validate(
 
             batch_size = output.shape[0]
             losses_m.update(reduced_loss.item(), batch_size)
-            top1_m.update(acc1.item(), batch_size)
-            top5_m.update(acc5.item(), batch_size)
-
+            final_score_m.update(final_score.item(), batch_size)
+            for i in range(14):
+                classes_m[i].update(auc_scores[i].item(), batch_size)
             batch_time_m.update(time.time() - end)
             end = time.time()
             if utils.is_primary(args) and (last_batch or batch_idx % args.log_interval == 0):
@@ -1377,11 +1386,14 @@ def validate(
                     f'{log_name}: [{batch_idx:>4d}/{last_idx}]  '
                     f'Time: {batch_time_m.val:.3f} ({batch_time_m.avg:.3f})  '
                     f'Loss: {losses_m.val:>7.3f} ({losses_m.avg:>6.3f})  '
-                    f'Acc@1: {top1_m.val:>7.3f} ({top1_m.avg:>7.3f})  '
-                    f'Acc@5: {top5_m.val:>7.3f} ({top5_m.avg:>7.3f})'
+                    f'Final Score: {final_score_m.val:>7.3f}' + ''.join([f'\tAUC{i} Score: {classes_m[i].val:>7.3f}' for i in range(14)])
                 )
 
-    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+    metrics = OrderedDict(
+    [('loss', losses_m.avg), 
+     ('final_score', final_score_m.avg)] + 
+    [(f'AUC{i}', classes_m[i].avg) for i in range(14)]
+)
 
     return metrics
 

@@ -10,7 +10,7 @@ from sklearn.model_selection import KFold
 
 # 你可以在这个地方定义 CFG 和尺寸等全局配置
 class CFG:
-    size = 384  # 假设目标尺寸为 256，按照需要修改
+    size = 300  # 假设目标尺寸为 256，按照需要修改
 
 def get_inference_transform():
     """获取推理时的预处理变换"""
@@ -21,7 +21,7 @@ def get_inference_transform():
     ])
 
 class RSNADataset(Dataset):
-    def __init__(self, train_csv, series_dir, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
+    def __init__(self, train_csv, series_dir, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 300, 300), transform=None):
         # 读取 CSV 文件
         self.train_df = pd.read_csv(train_csv)
         

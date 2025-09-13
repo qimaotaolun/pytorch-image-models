@@ -1359,7 +1359,7 @@ def validate(
                     target = target[0:target.size(0):reduce_factor]
 
                 loss = loss_fn(output, target)
-            final_score, auc_scores = utils.accuracy(torch.sigmoid(output).cpu().numpy(), target.cpu().numpy())
+            final_score, auc_scores = utils.accuracy(torch.sigmoid(output), target)
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)

@@ -20,6 +20,18 @@ def get_inference_transform():
         ToTensorV2(),  # 转为 PyTorch Tensor
     ])
 
+def get_train_transform():
+    """获取训练时的预处理变换"""
+    return A.Compose([
+        A.Resize(CFG.size, CFG.size),  # 调整图像大小
+        A.Blur(blur_limit=7, p=0.5),  # 随机模糊
+        A.OpticalDistortion(distort_limit=0.05, shift_limit=0.05, p=0.5),  # 随机光学畸变
+        A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=30, p=0.5),  # 随机平移、缩放和旋转
+        A.CoarseDropout(max_holes=8, max_height=16, max_width=16, p=0.5),  # 随机丢失区域
+        A.Normalize(),  # 归一化
+        ToTensorV2(),  # 转为 PyTorch Tensor
+    ])
+
 class RSNADataset(Dataset):
     def __init__(self, train_csv, series_dir, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
         # 读取 CSV 文件
@@ -59,7 +71,14 @@ class RSNADataset(Dataset):
         self.target_shape = target_shape
         
         # 默认使用的变换
-        self.transform = transform if transform else get_inference_transform()
+        if transform:
+            self.transform = transform
+        else:
+            if split == 'train' or split == 'all':
+                self.transform = get_train_transform()
+            else:
+                self.transform = get_inference_transform()
+        
         
         # 5-fold交叉验证
         kf = KFold(n_splits=5, shuffle=True, random_state=42)

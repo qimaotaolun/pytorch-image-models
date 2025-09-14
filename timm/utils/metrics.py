@@ -139,9 +139,9 @@ def accuracy(
     """
     n_classes = y_true.shape[1]
 
-    for i in range(len(y_scores)):
-        if torch.any(y_scores[i, :-1] > threshold): 
-            y_scores[i, -1] = 1  
+    # for i in range(len(y_scores)):
+    #     if torch.any(y_scores[i, :-1] > threshold): 
+    #         y_scores[i, -1] = 1  
         
     try:
         y_scores = torch.nan_to_num(y_scores,nan=0.5)

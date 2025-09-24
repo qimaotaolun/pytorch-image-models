@@ -113,7 +113,8 @@ def accuracy(
     y_scores: torch.Tensor,
     y_true: torch.Tensor,
     class_weights: Optional[List[float]] = None,
-    threshold: float = 0.5,
+    if_final: bool = False,
+    # threshold: float = 0.5,
 ) -> float:
     """Compute weighted AUC for multilabel classification.
 
@@ -157,7 +158,8 @@ def accuracy(
     # Handle weights
     if class_weights is None:  # Uniform weights
         weights_array = torch.ones(n_classes,device=y_true.device)
-        weights_array[-1] = 13
+        if if_final:
+            weights_array[-1] = 13
     else:
         weights_array = class_weights
 
@@ -177,6 +179,7 @@ def accuracy(
         raise ValueError('At least one class weight must be positive')
 
     # Normalize weights to sum to 1
+    print(f"weights_array: {weights_array}")
     weights_array = weights_array / torch.sum(weights_array)
     # Compute weighted average
     return torch.sum(individual_aucs * weights_array), individual_aucs

@@ -179,7 +179,6 @@ def accuracy(
         raise ValueError('At least one class weight must be positive')
 
     # Normalize weights to sum to 1
-    print(f"weights_array: {weights_array}")
     weights_array = weights_array / torch.sum(weights_array)
     # Compute weighted average
     return torch.sum(individual_aucs * weights_array), individual_aucs

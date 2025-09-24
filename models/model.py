@@ -1,36 +1,20 @@
 import timm
 import torch
 from torch.functional import F
-from vit_pytorch.cross_vit import CrossViT
 
 class MyModel(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=1):
         super(MyModel, self).__init__()
-        self.timm = CrossViT(
-            image_size = 256,
-            num_classes = 14,
-            depth = 4,               # number of multi-scale encoding blocks
-            sm_dim = 192,            # high res dimension
-            sm_patch_size = 16,      # high res patch size (should be smaller than lg_patch_size)
-            sm_enc_depth = 2,        # high res depth
-            sm_enc_heads = 8,        # high res heads
-            sm_enc_mlp_dim = 2048,   # high res feedforward dimension
-            lg_dim = 384,            # low res dimension
-            lg_patch_size = 64,      # low res patch size
-            lg_enc_depth = 3,        # low res depth
-            lg_enc_heads = 8,        # low res heads
-            lg_enc_mlp_dim = 2048,   # low res feedforward dimensions
-            cross_attn_depth = 2,    # cross attention rounds
-            cross_attn_heads = 8,    # cross attention heads
-            dropout = 0.1,
-            emb_dropout = 0.1,
-            channels= 32,
+        print(f"Initializing model...{num_classes}")
+        self.timm_0 = timm.create_model(
+            "tf_efficientnetv2_s.in21k_ft_in1k", 
+            num_classes=num_classes, 
+            pretrained=False,  # Don't load pretrained weights
+            in_chans=32
         )
         
     def forward(self, x):
-        if x.shape[0] != 256:
-            x = F.interpolate(x, size=(256, 256), mode='bilinear')
-        x = self.timm(x)
+        x = self.timm_0(x)
         return x
 
 if __name__ == '__main__':

@@ -526,7 +526,7 @@ def main():
     #     **factory_kwargs,
     #     **args.model_kwargs,
     # )
-    model = MyModel()
+    model = MyModel(num_classes=args.num_classes)
     if args.head_init_scale is not None:
         with torch.no_grad():
             model.get_classifier().weight.mul_(args.head_init_scale)
@@ -697,6 +697,7 @@ def main():
         root=args.data_dir,
         split=args.train_split,
         series_dir = args.series_dir,
+        labels = args.labels,
         fold=args.fold,
         use_cache=args.use_cache,
         is_training=True,
@@ -719,6 +720,7 @@ def main():
             root=args.data_dir,
             split=args.val_split,
             series_dir = args.series_dir,
+            labels= args.labels,
             fold=args.fold,
             use_cache=args.use_cache,
             is_training=False,

@@ -65,8 +65,6 @@ class RSNADataset(Dataset):
         ]
         if labels is not None:
             self.LABEL_COLS = [self.LABEL_COLS[i] for i in labels]
-        print(f'Using labels: {self.LABEL_COLS}')
-        print(f'Number of labels: {len(self.LABEL_COLS)}')
         # 初始化一些变量
         self.series_paths = []  # 存储图像序列的路径
         self.labels = []        # 存储标签

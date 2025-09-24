@@ -78,6 +78,7 @@ def create_dataset(
         repeats: int = 0,
         input_img_mode: str = 'RGB',
         trust_remote_code: bool = False,
+        labels: Optional[list] = None,
         **kwargs,
 ):
     """ Dataset factory method
@@ -116,7 +117,7 @@ def create_dataset(
     name = name.lower()
     if name == 'rsna2025':
         from .rsna2025 import RSNADataset
-        return RSNADataset(root,split=split,series_dir=series_dir,fold=fold,use_cache=use_cache)
+        return RSNADataset(root,split=split,series_dir=series_dir,fold=fold,use_cache=use_cache,labels=labels)
     elif name.startswith('torch/'):
         name = name.split('/', 2)[-1]
         torch_kwargs = dict(root=root, download=download, **kwargs)

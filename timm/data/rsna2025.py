@@ -33,7 +33,7 @@ def get_train_transform():
     ])
 
 class RSNADataset(Dataset):
-    def __init__(self, train_csv, series_dir, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
+    def __init__(self, train_csv, series_dir, labels=None, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
         # 读取 CSV 文件
         self.train_df = pd.read_csv(train_csv)
         
@@ -63,7 +63,10 @@ class RSNADataset(Dataset):
             'Other Posterior Circulation',
             'Aneurysm Present',
         ]
-        
+        if labels is not None:
+            self.LABEL_COLS = [self.LABEL_COLS[i] for i in labels]
+        print(f'Using labels: {self.LABEL_COLS}')
+        print(f'Number of labels: {len(self.LABEL_COLS)}')
         # 初始化一些变量
         self.series_paths = []  # 存储图像序列的路径
         self.labels = []        # 存储标签

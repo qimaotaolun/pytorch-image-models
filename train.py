@@ -1042,6 +1042,8 @@ def main():
                     device=device,
                     amp_autocast=amp_autocast,
                     model_dtype=model_dtype,
+                    num_classes=args.num_classes,
+                    if_final=13 in args.labels,
                 )
 
                 if model_ema is not None and not args.model_ema_force_cpu:
@@ -1056,6 +1058,8 @@ def main():
                         device=device,
                         amp_autocast=amp_autocast,
                         log_suffix=' (EMA)',
+                        num_classes=args.num_classes,
+                        if_final=13 in args.labels,    
                     )
                     eval_metrics = ema_eval_metrics
             else:
@@ -1331,12 +1335,14 @@ def validate(
         device=torch.device('cuda'),
         amp_autocast=suppress,
         model_dtype=None,
-        log_suffix=''
+        log_suffix='',
+        num_classes=1,
+        if_final=False,
 ):
     batch_time_m = utils.AverageMeter()
     losses_m = utils.AverageMeter()
     final_score_m = utils.AverageMeter()
-    classes_m = [utils.AverageMeter() for _ in range(14)]
+    classes_m = [utils.AverageMeter() for _ in range(num_classes)]
 
     model.eval()
 
@@ -1363,7 +1369,7 @@ def validate(
                     target = target[0:target.size(0):reduce_factor]
 
                 loss = loss_fn(output, target)
-            final_score, auc_scores = utils.accuracy(torch.sigmoid(output), target)
+            final_score, auc_scores = utils.accuracy(torch.sigmoid(output), target,if_final=if_final)
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
@@ -1380,7 +1386,7 @@ def validate(
             batch_size = output.shape[0]
             losses_m.update(reduced_loss.item(), batch_size)
             final_score_m.update(final_score.item(), batch_size)
-            for i in range(14):
+            for i in range(num_classes):
                 classes_m[i].update(auc_scores[i].item(), batch_size)
             batch_time_m.update(time.time() - end)
             end = time.time()
@@ -1390,13 +1396,13 @@ def validate(
                     f'{log_name}: [{batch_idx:>4d}/{last_idx}]  '
                     f'Time: {batch_time_m.val:.3f} ({batch_time_m.avg:.3f})  '
                     f'Loss: {losses_m.val:>7.3f} ({losses_m.avg:>6.3f})  '
-                    f'Final Score: {final_score_m.val:>7.3f}' + ''.join([f'\tAUC{i} Score: {classes_m[i].val:>7.3f}' for i in range(14)])
+                    f'Final Score: {final_score_m.val:>7.3f}' + ''.join([f'\tAUC{i} Score: {classes_m[i].val:>7.3f}' for i in range(num_classes)])
                 )
 
     metrics = OrderedDict(
     [('loss', losses_m.avg), 
      ('final_score', final_score_m.avg)] + 
-    [(f'AUC{i}', classes_m[i].avg) for i in range(14)]
+    [(f'AUC{i}', classes_m[i].avg) for i in range(num_classes)]
 )
 
     return metrics

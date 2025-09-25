@@ -9,7 +9,7 @@ class MyModel(torch.nn.Module):
         self.timm_0 = timm.create_model(
             "tf_efficientnetv2_s.in21k_ft_in1k", 
             num_classes=num_classes, 
-            pretrained=False,  # Don't load pretrained weights
+            pretrained=True,  # Don't load pretrained weights
             in_chans=32
         )
         

@@ -65,6 +65,7 @@ def create_dataset(
         root: Optional[str] = None,
         split: str = 'validation',
         series_dir: str = '',
+        use_3d: bool = False,
         fold: int = 0,
         use_cache: bool = False,
         search_split: bool = True,
@@ -117,7 +118,12 @@ def create_dataset(
     name = name.lower()
     if name == 'rsna2025':
         from .rsna2025 import RSNADataset
-        return RSNADataset(root,split=split,series_dir=series_dir,fold=fold,use_cache=use_cache,labels=labels)
+        return RSNADataset(root,split=split,
+                           series_dir=series_dir,
+                           use_3d=use_3d,
+                           fold=fold,
+                           use_cache=use_cache,
+                           labels=labels)
     elif name.startswith('torch/'):
         name = name.split('/', 2)[-1]
         torch_kwargs = dict(root=root, download=download, **kwargs)

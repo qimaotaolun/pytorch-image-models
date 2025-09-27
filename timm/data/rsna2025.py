@@ -8,7 +8,6 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.model_selection import KFold
 
-# 你可以在这个地方定义 CFG 和尺寸等全局配置
 class CFG:
     size = 384  # 假设目标尺寸为 256，按照需要修改
 
@@ -33,9 +32,10 @@ def get_train_transform():
     ])
 
 class RSNADataset(Dataset):
-    def __init__(self, train_csv, series_dir, labels=None, split='validation', fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
+    def __init__(self, train_csv, series_dir, labels=None, split='validation', use_3d = False, fold=0, num_limit=-1, use_cache=False, target_shape=(32, 384, 384), transform=None):
         # 读取 CSV 文件
         self.train_df = pd.read_csv(train_csv)
+        self.use_3d = use_3d
         
         # 如果样本数大于 num_limit，应用限制
         if len(self.train_df) > num_limit and num_limit != -1:
@@ -145,6 +145,8 @@ class RSNADataset(Dataset):
         # 如果有 transform，应用变换
         if self.transform:
             volume = self.transform(image=image)["image"]
+        if self.use_3d:
+            volume = volume.unsqueeze(0)  # 添加一个额外的维度以适应 3D CNN
         
         # 将标签转换为 tensor
         labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze(0)

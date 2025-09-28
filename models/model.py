@@ -1,4 +1,4 @@
-# import timm # 0.7302350997924805 35 0.77
+# import timm
 import torch
 from torch.functional import F
 from torch import nn

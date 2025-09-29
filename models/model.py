@@ -129,9 +129,10 @@ class MyModel(nn.Module):
         x = self.pool3(F.relu(self.bn3(self.conv3(x))))
         x = self.pool4(F.relu(self.bn4(self.conv4(x))))
         x = self.adaptive_pool(x)
-        x = x.view(x.size(0), -1).unsqueeze(1)
+        x = x.view(x.size(0), -1)
         
         if self.depth > 0: # Transfomer
+            x = x.unsqueeze(1)
             b, n, _ = x.shape
             cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
             x = torch.cat((cls_tokens, x), dim=1)

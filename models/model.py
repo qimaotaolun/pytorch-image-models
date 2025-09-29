@@ -88,6 +88,7 @@ class MyModel(nn.Module):
     def __init__(self, num_classes: int = 14, dim = 1024, pool = 'cls', depth = 1, heads = 8, dim_head = 64, mlp_dim = 2048, dropout = 0., emb_dropout = 0.):
         super(MyModel, self).__init__()
         assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
+        self.depth = depth
         self.conv1 = nn.Conv3d(1, 16, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm3d(16)
         self.pool1 = nn.MaxPool3d(2)
@@ -103,16 +104,17 @@ class MyModel(nn.Module):
         self.conv4 = nn.Conv3d(64, 128, kernel_size=3, padding=1)
         self.bn4 = nn.BatchNorm3d(128)
         self.pool4 = nn.MaxPool3d(2)
-
+    
         self.adaptive_pool = nn.AdaptiveAvgPool3d((2, 2, 2))
         
-        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
-        self.pos_embedding = nn.Parameter(torch.randn(1, 2, dim))
-        self.dropout = nn.Dropout(emb_dropout)
-        
-        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        if self.depth > 0: # Transfomer
+            self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+            self.pos_embedding = nn.Parameter(torch.randn(1, 2, dim))
+            self.dropout = nn.Dropout(emb_dropout)
+            
+            self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
 
-        self.pool = pool
+            self.pool = pool
         
         self.fc1 = nn.Linear(128 * 2 * 2 * 2, 256)
         self.dropout1 = nn.Dropout(0.5)
@@ -128,13 +130,16 @@ class MyModel(nn.Module):
         x = self.pool4(F.relu(self.bn4(self.conv4(x))))
         x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1).unsqueeze(1)
-        b, n, _ = x.shape
-        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim=1)
-        x += self.pos_embedding[:, :(n + 1)]
-        x = self.dropout(x)
-        x = self.transformer(x)
-        x = x.mean(dim = 1) if self.pool == 'mean' else x[:, 0]
+        
+        if self.depth > 0: # Transfomer
+            b, n, _ = x.shape
+            cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+            x = torch.cat((cls_tokens, x), dim=1)
+            x += self.pos_embedding[:, :(n + 1)]
+            x = self.dropout(x)
+            x = self.transformer(x)
+            x = x.mean(dim = 1) if self.pool == 'mean' else x[:, 0]
+        
         x = F.relu(self.fc1(x)); x = self.dropout1(x)
         x = F.relu(self.fc2(x)); x = self.dropout2(x)
         x = self.fc3(x)  # logits
@@ -156,7 +161,7 @@ if __name__ == '__main__':
         print("CUDA not available, using CPU.")
 
     # Initialize model and move to appropriate device
-    model = MyModel(num_classes=14,depth=2)
+    model = MyModel(num_classes=14,depth=0)
     model = model.to(device)
 
     # Load the saved model weights

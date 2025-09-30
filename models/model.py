@@ -85,53 +85,139 @@ class Transformer(nn.Module):
 class MyModel(nn.Module):
     """Lightweight 3D CNN for multi-label classification (returns logits)."""
 
-    def __init__(self, num_classes: int = 14, dim = 1024, pool = 'cls', depth = 1, heads = 8, dim_head = 64, mlp_dim = 2048, dropout = 0., emb_dropout = 0.):
+    def __init__(self, num_classes: int = 14, dim: int = 1024, pool: str = 'cls', depth: int = 4, tranformer_depth: int = 4, heads = 8, dim_head = 64, mlp_dim = 2048, transformer_dropout = 0., emb_dropout = 0.):
         super(MyModel, self).__init__()
         assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
         self.depth = depth
-        self.conv1 = nn.Conv3d(1, 16, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm3d(16)
-        self.pool1 = nn.MaxPool3d(2)
+        self.tranfomer_depth = tranformer_depth
 
-        self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm3d(32)
-        self.pool2 = nn.MaxPool3d(2)
-
-        self.conv3 = nn.Conv3d(32, 64, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm3d(64)
-        self.pool3 = nn.MaxPool3d(2)
-
-        self.conv4 = nn.Conv3d(64, 128, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm3d(128)
-        self.pool4 = nn.MaxPool3d(2)
+        # 使用 depth 构建 CNN 块（ModuleList 包含 Conv3d、BN、ReLU、MaxPool3d 四者的顺序模块）
+        self.cnn_blocks = nn.ModuleList()
+        in_channels = 1
+        for i in range(self.depth):
+            out_channels = min(128, 16 * (2 ** i))
+            block = nn.Sequential(
+                nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm3d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.MaxPool3d(2)
+            )
+            self.cnn_blocks.append(block)
+            in_channels = out_channels
     
         self.adaptive_pool = nn.AdaptiveAvgPool3d((2, 2, 2))
+
+        # CNN 输出通道与展平维度
+        self.cnn_out_channels = in_channels
+        self.flatten_dim = self.cnn_out_channels * 2 * 2 * 2
         
-        if self.depth > 0: # Transfomer
+        if self.tranfomer_depth > 0: # Transformer
             self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
             self.pos_embedding = nn.Parameter(torch.randn(1, 2, dim))
             self.dropout = nn.Dropout(emb_dropout)
-            
-            self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+
+            # 若 CNN 展平维度与 Transformer 预期 dim 不一致，添加线性投影
+            self.pre_transformer_proj = nn.Identity() if self.flatten_dim == dim else nn.Linear(self.flatten_dim, dim)
+
+            self.transformer = Transformer(dim, self.tranfomer_depth, heads, dim_head, mlp_dim, transformer_dropout)
 
             self.pool = pool
         
-        self.fc1 = nn.Linear(128 * 2 * 2 * 2, 256)
+        self.fc1 = nn.Linear(self.flatten_dim, 256)
         self.dropout1 = nn.Dropout(0.5)
         self.fc2 = nn.Linear(256, 128)
         self.dropout2 = nn.Dropout(0.3)
         self.fc3 = nn.Linear(128, num_classes)
 
+    def freeze_transformer(self):
+        """
+        冻结 Transformer 子模块（仅在 self.tranfomer_depth > 0 时存在）以及 CLS/位置参数的梯度。
+        """
+        if self.tranfomer_depth > 0:
+            for p in self.transformer.parameters():
+                p.requires_grad = False
+            # cls_token 与 pos_embedding 是 nn.Parameter
+            self.cls_token.requires_grad = False
+            self.pos_embedding.requires_grad = False
+
+    def unfreeze_transformer(self):
+        """
+        解冻 Transformer 子模块（仅在 self.tranfomer_depth > 0 时存在）以及 CLS/位置参数的梯度。
+        """
+        if self.tranfomer_depth > 0:
+            for p in self.transformer.parameters():
+                p.requires_grad = True
+            self.cls_token.requires_grad = True
+            self.pos_embedding.requires_grad = True
+
+    def freeze_cnn_classifier(self):
+        """
+        冻结卷积/BN 以及分类头（全连接层）的梯度。
+        说明：池化层与 Dropout 没有可训练参数，忽略即可。
+        """
+        modules = [*self.cnn_blocks, self.fc1, self.fc2, self.fc3]
+        for m in modules:
+            for p in m.parameters():
+                p.requires_grad = False
+
+    def unfreeze_cnn_classifier(self):
+        """
+        解冻卷积/BN 以及分类头（全连接层）的梯度。
+        """
+        modules = [*self.cnn_blocks, self.fc1, self.fc2, self.fc3]
+        for m in modules:
+            for p in m.parameters():
+                p.requires_grad = True
+
+    def save_cnn_classifier_weights(self, path: str) -> None:
+        """
+        仅保存 CNN + 分类头（fc1, fc2, fc3）权重到文件。
+        保存为 state_dict(dict)，包含 BN 的 running stats 等缓冲区；不包含 Transformer 相关参数。
+        """
+        container = nn.ModuleDict({
+            'cnn_blocks': self.cnn_blocks,
+            'fc1': self.fc1,
+            'fc2': self.fc2,
+            'fc3': self.fc3,
+        })
+        state = container.state_dict()
+        # 将张量转为 CPU，避免跨设备问题
+        state_cpu = {k: v.detach().cpu() for k, v in state.items()}
+        torch.save(state_cpu, path)
+
+    def load_cnn_classifier_weights(self, path: str, strict: bool = True) -> None:
+        """
+        从文件加载 CNN + 分类头（fc1, fc2, fc3）权重。
+        - strict: 是否严格匹配键名。
+        - 自动兼容常见前缀（如 DataParallel 的 'module.' 或外层 'model.'）。
+        """
+        sd = torch.load(path, map_location='cpu')
+        if isinstance(sd, dict) and 'state_dict' in sd and isinstance(sd['state_dict'], dict):
+            sd = sd['state_dict']
+
+        # 去除常见的前缀，避免键名不一致
+        if any(k.startswith('module.') for k in sd.keys()):
+            sd = { (k[7:] if k.startswith('module.') else k): v for k, v in sd.items() }
+        if any(k.startswith('model.') for k in sd.keys()):
+            sd = { (k[6:] if k.startswith('model.') else k): v for k, v in sd.items() }
+
+        container = nn.ModuleDict({
+            'cnn_blocks': self.cnn_blocks,
+            'fc1': self.fc1,
+            'fc2': self.fc2,
+            'fc3': self.fc3,
+        })
+        container.load_state_dict(sd, strict=strict)
     def forward(self, x):
         # x: (B,1,D,H,W)
-        x = self.pool1(F.relu(self.bn1(self.conv1(x))))
-        x = self.pool2(F.relu(self.bn2(self.conv2(x))))
-        x = self.pool3(F.relu(self.bn3(self.conv3(x))))
-        x = self.pool4(F.relu(self.bn4(self.conv4(x))))
+        # 根据 depth 用 for 遍历 CNN 块（ModuleList 包含 Conv+BN+ReLU+Pool）
+        for block in self.cnn_blocks:
+            x = block(x)
         x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
         
-        if self.depth > 0: # Transfomer
+        if self.tranfomer_depth > 0: # Transformer
+            x = self.pre_transformer_proj(x)
             x = x.unsqueeze(1)
             b, n, _ = x.shape
             cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
@@ -162,7 +248,20 @@ if __name__ == '__main__':
         print("CUDA not available, using CPU.")
 
     # Initialize model and move to appropriate device
-    model = MyModel(num_classes=14,depth=0)
+    model = MyModel(num_classes=14,depth=4,tranformer_depth=4,transformer_dropout=0.)
+    
+    # model.freeze_cnn_classifier()
+    # model.freeze_transformer()
+    # 在 main 中输出当前可训练参数量
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable params: {trainable_params:,}")
+    
+    # model.unfreeze_cnn_classifier()
+    # model.unfreeze_transformer()
+    
+    # model.save_cnn_classifier_weights('cnn_classifier_weights.pth')
+    # model.load_cnn_classifier_weights('cnn_classifier_weights.pth',strict=True)
+    
     model = model.to(device)
 
     # Load the saved model weights

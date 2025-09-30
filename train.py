@@ -526,7 +526,12 @@ def main():
     #     **factory_kwargs,
     #     **args.model_kwargs,
     # )
-    model = MyModel(num_classes=args.num_classes,depth=args.depth)
+    model = MyModel(
+        num_classes=args.num_classes,
+        depth=args.depth,
+        tranformer_depth=args.tranformer_depth,
+        transformer_dropout=args.transformer_dropout,
+        )
     if args.head_init_scale is not None:
         with torch.no_grad():
             model.get_classifier().weight.mul_(args.head_init_scale)

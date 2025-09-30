@@ -529,9 +529,13 @@ def main():
     model = MyModel(
         num_classes=args.num_classes,
         depth=args.depth,
-        tranformer_depth=args.tranformer_depth,
+        tranformer_depth=args.transformer_depth,
         transformer_dropout=args.transformer_dropout,
         )
+    if args.transformer_depth > 0:
+        model.load_cnn_classifier_weights(args.cnn_classifier_weights_path,strict=True)
+        model.freeze_cnn_classifier()
+        
     if args.head_init_scale is not None:
         with torch.no_grad():
             model.get_classifier().weight.mul_(args.head_init_scale)

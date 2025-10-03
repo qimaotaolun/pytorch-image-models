@@ -142,7 +142,8 @@ class EfficientNetV2_3D(nn.Module):
         self,
         in_chs: int = 1,
         num_classes: int = 14,
-        widths: tuple[int, ...] = (16, 32, 64, 128, 256),
+        widths: tuple[int, ...] = (24, 48, 80, 160, 256),
+        # widths: tuple[int, ...] = (16, 32, 64, 128, 256),
         repeats: tuple[int, ...] = (2, 4, 4, 6, 6),
         expand_ratio: int = 4,
         se_ratio: float = 0.25,
@@ -303,4 +304,3 @@ if __name__ == '__main__':
     if device.type == 'cuda':
         print(f"Allocated Memory after operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
         print(f"Cached Memory after operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
-

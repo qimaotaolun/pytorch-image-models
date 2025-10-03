@@ -526,14 +526,16 @@ def main():
     #     **factory_kwargs,
     #     **args.model_kwargs,
     # )
+    # 使用安全的 getattr 以兼容未在 argparse 中显式声明的字段
     model = MyModel(
         num_classes=args.num_classes,
-        depth=args.depth,
-        tranformer_depth=args.transformer_depth,
-        transformer_dropout=args.transformer_dropout,
-        )
-    if args.transformer_depth > 0:
-        model.load_cnn_classifier_weights(args.cnn_classifier_weights_path,strict=True)
+        in_chans=getattr(args, 'in_chans', 1),
+        depth=getattr(args, 'depth', None),
+        tranformer_depth=getattr(args, 'transformer_depth', None),
+        transformer_dropout=getattr(args, 'transformer_dropout', None),
+    )
+    if getattr(args, 'transformer_depth', 0) > 0 and getattr(args, 'cnn_classifier_weights_path', None):
+        model.load_cnn_classifier_weights(args.cnn_classifier_weights_path, strict=True)
         model.freeze_cnn_classifier()
         
     if args.head_init_scale is not None:

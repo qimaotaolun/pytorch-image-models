@@ -529,7 +529,7 @@ def main():
     # 使用安全的 getattr 以兼容未在 argparse 中显式声明的字段
     model = MyModel(
         num_classes=args.num_classes,
-        in_chans=getattr(args, 'in_chans', 1),
+        # in_chans=getattr(args, 'in_chans', 1),
         depth=getattr(args, 'depth', None),
         tranformer_depth=getattr(args, 'transformer_depth', None),
         transformer_dropout=getattr(args, 'transformer_dropout', None),

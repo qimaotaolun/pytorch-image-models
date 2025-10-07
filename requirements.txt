@@ -1,6 +1,10 @@
 torch>=1.7
 torchvision
 pyyaml
-huggingface_hub>=0.17.0
+huggingface_hub
 safetensors>=0.2
 numpy
+tqdm
+albumentations
+pandas
+scikit-learn

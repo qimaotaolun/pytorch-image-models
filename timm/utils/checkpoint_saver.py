@@ -102,6 +102,10 @@ class CheckpointSaver:
         if metric is not None:
             save_state['metric'] = metric
         torch.save(save_state, save_path)
+        
+        # 保存一个额外的 .pth 文件
+        pth_save_path = save_path.replace(self.extension, '.pth')
+        torch.save(self.model.state_dict(), pth_save_path)  # 保存模型的 state_dict
 
     def _cleanup_checkpoints(self, trim=0):
         trim = min(len(self.checkpoint_files), trim)
@@ -113,6 +117,9 @@ class CheckpointSaver:
             try:
                 _logger.debug("Cleaning checkpoint: {}".format(d))
                 os.remove(d[0])
+                pth_file = d[0].replace(self.extension, '.pth')
+                if os.path.exists(pth_file):
+                    os.remove(pth_file)  # 删除 .pth 文件
             except Exception as e:
                 _logger.error("Exception '{}' while deleting checkpoint".format(e))
         self.checkpoint_files = self.checkpoint_files[:delete_index]
@@ -123,6 +130,10 @@ class CheckpointSaver:
         last_save_path = os.path.join(self.checkpoint_dir, 'last' + self.extension)
         self._save(tmp_save_path, epoch, metric)
         self._replace(tmp_save_path, last_save_path)
+
+       # 额外保存 .pth 文件
+        last_pth_save_path = last_save_path.replace(self.extension, '.pth')
+        torch.save(self.model.state_dict(), last_pth_save_path)  # 保存模型的 state_dict
 
         worst_file = self.checkpoint_files[-1] if self.checkpoint_files else None
         if (
@@ -136,6 +147,10 @@ class CheckpointSaver:
             save_path = os.path.join(self.checkpoint_dir, filename)
             self._duplicate(last_save_path, save_path)
 
+            # 额外保存 .pth 文件
+            pth_save_path = save_path.replace(self.extension, '.pth')
+            torch.save(self.model.state_dict(), pth_save_path)  # 保存模型的 state_dict
+        
             self.checkpoint_files.append((save_path, metric))
             self.checkpoint_files = sorted(
                 self.checkpoint_files,
@@ -146,13 +161,17 @@ class CheckpointSaver:
             checkpoints_str = "Current checkpoints:\n"
             for c in self.checkpoint_files:
                 checkpoints_str += ' {}\n'.format(c)
-            _logger.info(checkpoints_str)
+            # _logger.info(checkpoints_str)
 
             if metric is not None and (self.best_metric is None or self.cmp(metric, self.best_metric)):
                 self.best_epoch = epoch
                 self.best_metric = metric
                 best_save_path = os.path.join(self.checkpoint_dir, 'model_best' + self.extension)
                 self._duplicate(last_save_path, best_save_path)
+                
+                # 额外保存 best 的 .pth 文件
+                best_pth_save_path = best_save_path.replace(self.extension, '.pth')
+                torch.save(self.model.state_dict(), best_pth_save_path)  # 保存模型的 state_dict
 
         return (None, None) if self.best_metric is None else (self.best_metric, self.best_epoch)
 

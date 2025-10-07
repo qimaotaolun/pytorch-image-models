@@ -43,7 +43,7 @@ from timm.models import create_model, safe_model_name, resume_checkpoint, load_c
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
-from models import MyModel,create_tf_efficientnetv2_s_3d_sigmoid
+from models import MyModel
 
 try:
     from apex import amp

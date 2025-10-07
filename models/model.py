@@ -95,7 +95,7 @@ class MyModel(nn.Module):
         self.cnn_blocks = nn.ModuleList()
         in_channels = 1
         for i in range(self.depth):
-            out_channels = min(512, 32 * (2 ** i))
+            out_channels = min(512, 16 * (2 ** i))
             block = nn.Sequential(
                 nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
                 nn.BatchNorm3d(out_channels),
@@ -292,3 +292,4 @@ if __name__ == '__main__':
     if device.type == 'cuda':
         print(f"Allocated Memory after operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
         print(f"Cached Memory after operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
+

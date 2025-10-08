@@ -510,22 +510,22 @@ def main():
             num_classes=-1,  # force head adaptation
         )
 
-    model = create_model(
-        args.model,
-        pretrained=args.pretrained,
-        in_chans=in_chans,
-        num_classes=args.num_classes,
-        drop_rate=args.drop,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=args.drop_block,
-        global_pool=args.gp,
-        bn_momentum=args.bn_momentum,
-        bn_eps=args.bn_eps,
-        scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint,
-        **factory_kwargs,
-        **args.model_kwargs,
-    )
+    # model = create_model(
+    #     args.model,
+    #     pretrained=args.pretrained,
+    #     in_chans=in_chans,
+    #     num_classes=args.num_classes,
+    #     drop_rate=args.drop,
+    #     drop_path_rate=args.drop_path,
+    #     drop_block_rate=args.drop_block,
+    #     global_pool=args.gp,
+    #     bn_momentum=args.bn_momentum,
+    #     bn_eps=args.bn_eps,
+    #     scriptable=args.torchscript,
+    #     checkpoint_path=args.initial_checkpoint,
+    #     **factory_kwargs,
+    #     **args.model_kwargs,
+    # )
     # 使用安全的 getattr 以兼容未在 argparse 中显式声明的字段
     # model = MyModel(
     #     num_classes=args.num_classes,
@@ -540,6 +540,19 @@ def main():
     #                                               kd=3, 
     #                                               reduce='mean', 
     #                                               stem_in_chans_2d=32)
+    model = MyModel(
+        num_classes=14,
+        in_chans=32,
+        pretrained=False,
+        embed_dim_2d=512,
+        embed_dim_3d=512,
+        base_ch_3d=16,
+        max_ch_3d=256,
+        pool_out_3d=2,
+        fusion_alpha=0.2,
+        fusion_dropout=0.2,
+    )
+    
     if getattr(args, 'transformer_depth', 0) > 0 and getattr(args, 'cnn_classifier_weights_path', None):
         model.load_cnn_classifier_weights(args.cnn_classifier_weights_path, strict=True)
         model.freeze_cnn_classifier()

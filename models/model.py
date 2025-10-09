@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import timm
+from timm.layers import NormMlpClassifierHead
 from typing import List, Optional
 
 
@@ -152,12 +153,16 @@ class MyModel(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # 末端分类头（拼接 2D/3D 向量）
+        # 末端分类头（拼接 2D/3D 向量），沿用 timm 的 NormMlpClassifierHead
         fusion_dim = embed_dim_2d + embed_dim_3d
-        self.classifier = nn.Sequential(
-            nn.Dropout(fusion_dropout),
-            nn.LayerNorm(fusion_dim),
-            nn.Linear(fusion_dim, num_classes),
+        self.classifier = NormMlpClassifierHead(
+            in_features=fusion_dim,
+            num_classes=num_classes,
+            hidden_size=None,
+            pool_type='avg',              # 保持与 ConvNeXt 默认一致：池化->归一化->MLP
+            drop_rate=fusion_dropout,
+            norm_layer='layernorm2d',
+            act_layer='gelu',             # 与 ConvNeXt 的 head act 对齐
         )
 
         self.fusion_alpha = fusion_alpha
@@ -197,8 +202,9 @@ class MyModel(nn.Module):
         assert z3d is not None, "3D 分支最后嵌入不存在，请检查 forward_stage 调用。"
 
         # 末端融合与分类（logits）
-        z = torch.cat([z2d, z3d], dim=1)
-        logits = self.classifier(z)
+        z = torch.cat([z2d, z3d], dim=1)          # (B, fusion_dim)
+        z_nchw = z.unsqueeze(-1).unsqueeze(-1)    # 适配 NormMlpClassifierHead 的 NCHW 输入 (B, C, 1, 1)
+        logits = self.classifier(z_nchw)          # (B, num_classes)
         return logits
 
     # ===== 训练阶段的可选冻结接口 =====
@@ -218,3 +224,66 @@ class MyModel(nn.Module):
         """解冻 2D 主干参数。"""
         for p in self.backbone.parameters():
             p.requires_grad = True
+
+if __name__ == '__main__':
+    torch.manual_seed(42)
+    
+    # 检查CUDA是否可用
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # 打印当前GPU的使用情况
+    if device.type == 'cuda':
+        print(f"GPU Available: {torch.cuda.get_device_name(0)}")
+        print(f"Total Memory: {torch.cuda.get_device_properties(0).total_memory / (1024 ** 3):.2f} GB")
+        print(f"Allocated Memory: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
+        print(f"Cached Memory: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
+    else:
+        print("CUDA not available, using CPU.")
+
+    # Initialize model and move to appropriate device
+    model = MyModel(num_classes=14,depth=5,tranformer_depth=0,transformer_dropout=0.)
+    # sd = torch.load('model_best.pth')
+    # if any(k.startswith('module.') for k in sd.keys()):
+    #     sd = { (k[7:] if k.startswith('module.') else k): v for k, v in sd.items() }
+    # model.load_state_dict(sd)
+    
+    # model.freeze_cnn_classifier()
+    # model.freeze_transformer()
+    # 在 main 中输出当前可训练参数量
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable params: {trainable_params:,}")
+    
+    # model.unfreeze_cnn_classifier()
+    # model.unfreeze_transformer()
+    
+    # model.save_cnn_classifier_weights('cnn_classifier_weights.pth')
+    # model.load_cnn_classifier_weights('cnn_classifier_weights.pth',strict=True)
+    
+    model = model.to(device)
+
+    # Load the saved model weights
+    # model.load_state_dict(torch.load('model_best.pth'))
+
+    # Set the model to evaluation mode
+    model.eval()
+
+    # Check memory usage before forward pass
+    if device.type == 'cuda':
+        print(f"Allocated Memory before operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
+        print(f"Cached Memory before operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
+    
+    # Create a dummy image tensor
+    image = torch.randn(1, 1, 32, 384, 384).to(device)
+
+    # Run forward pass
+    output = model(image)
+    
+    # Apply sigmoid activation
+    print(F.sigmoid(output))
+
+    # Check and print GPU memory usage after the operation
+    if device.type == 'cuda':
+        print(f"Allocated Memory after operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
+        print(f"Cached Memory after operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
+
+

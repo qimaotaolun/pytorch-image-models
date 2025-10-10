@@ -552,7 +552,7 @@ def main():
         fusion_alpha=0.2,
         fusion_dropout=0.2,
     )
-    model.load_state_dict(torch.load(args.rusume))
+    model.load_state_dict(torch.load(args.resume))
     print(f"Resume from {args.resume}")
     # model.freeze_backbone()
     if getattr(args, 'transformer_depth', 0) > 0 and getattr(args, 'cnn_classifier_weights_path', None):

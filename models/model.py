@@ -1,295 +1,268 @@
-# import timm
+import math
 import torch
-from torch.functional import F
 from torch import nn
-from einops import rearrange,repeat
+import timm
+from typing import List, Union
 
-# class MyModel(torch.nn.Module):
-#     def __init__(self, num_classes=1):
-#         super(MyModel, self).__init__()
-#         print(f"Initializing model...{num_classes}")
-#         self.timm_0 = timm.create_model(
-#             "tf_efficientnetv2_s.in21k_ft_in1k", 
-#             num_classes=num_classes, 
-#             pretrained=True,  # Don't load pretrained weights
-#             in_chans=32
-#         )
-        
-#     def forward(self, x):
-#         x = self.timm_0(x)
-#         return x
+def get_timestep_embedding(
+    timesteps: torch.Tensor,
+    embedding_dim: int,
+    flip_sin_to_cos: bool = False,
+    downscale_freq_shift: float = 1,
+    scale: float = 1,
+    max_period: int = 10000,
+):
+    """
+    This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
 
-class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout = 0.):
+    Args
+        timesteps (torch.Tensor):
+            a 1-D Tensor of N indices, one per batch element. These may be fractional.
+        embedding_dim (int):
+            the dimension of the output.
+        flip_sin_to_cos (bool):
+            Whether the embedding order should be `cos, sin` (if True) or `sin, cos` (if False)
+        downscale_freq_shift (float):
+            Controls the delta between frequencies between dimensions
+        scale (float):
+            Scaling factor applied to the embeddings.
+        max_period (int):
+            Controls the maximum frequency of the embeddings
+    Returns
+        torch.Tensor: an [N x dim] Tensor of positional embeddings.
+    """
+    assert len(timesteps.shape) == 1, "Timesteps should be a 1d-array"
+
+    half_dim = embedding_dim // 2
+    exponent = -math.log(max_period) * torch.arange(
+        start=0, end=half_dim, dtype=torch.float32, device=timesteps.device
+    )
+    exponent = exponent / (half_dim - downscale_freq_shift)
+
+    emb = torch.exp(exponent)
+    emb = timesteps[:, None].float() * emb[None, :]
+
+    # scale embeddings
+    emb = scale * emb
+
+    # concat sine and cosine embeddings
+    emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+
+    # flip sine and cosine embeddings
+    if flip_sin_to_cos:
+        emb = torch.cat([emb[:, half_dim:], emb[:, :half_dim]], dim=-1)
+
+    # zero pad
+    if embedding_dim % 2 == 1:
+        emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
+    return emb
+
+class Timesteps(nn.Module):
+    def __init__(self, num_channels: int, flip_sin_to_cos: bool, downscale_freq_shift: float, scale: int = 1):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
+        self.num_channels = num_channels
+        self.flip_sin_to_cos = flip_sin_to_cos
+        self.downscale_freq_shift = downscale_freq_shift
+        self.scale = scale
+
+    def forward(self, timesteps):
+        t_emb = get_timestep_embedding(
+            timesteps,
+            self.num_channels,
+            flip_sin_to_cos=self.flip_sin_to_cos,
+            downscale_freq_shift=self.downscale_freq_shift,
+            scale=self.scale,
         )
-    def forward(self, x):
-        return self.net(x)
+        return t_emb
 
-class Attention(nn.Module):
-    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+class TimestepEmbedding(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        time_embed_dim: int,
+        out_dim: int = None,
+        cond_proj_dim=None,
+        sample_proj_bias=True,
+    ):
         super().__init__()
-        inner_dim = dim_head *  heads
-        project_out = not (heads == 1 and dim_head == dim)
 
-        self.heads = heads
-        self.scale = dim_head ** -0.5
+        self.linear_1 = nn.Linear(in_channels, time_embed_dim, sample_proj_bias)
 
-        self.norm = nn.LayerNorm(dim)
-        self.attend = nn.Softmax(dim = -1)
-        self.dropout = nn.Dropout(dropout)
+        if cond_proj_dim is not None:
+            self.cond_proj = nn.Linear(cond_proj_dim, in_channels, bias=False)
+        else:
+            self.cond_proj = None
 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.act = nn.SiLU()
 
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        ) if project_out else nn.Identity()
+        if out_dim is not None:
+            time_embed_dim_out = out_dim
+        else:
+            time_embed_dim_out = time_embed_dim
+        self.linear_2 = nn.Linear(time_embed_dim, time_embed_dim_out, sample_proj_bias)
 
-    def forward(self, x):
-        x = self.norm(x)
-        qkv = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
+    def forward(self, sample, condition=None):
+        if condition is not None:
+            sample = sample + self.cond_proj(condition)
+        sample = self.linear_1(sample)
 
-        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        sample = self.act(sample)
 
-        attn = self.attend(dots)
-        attn = self.dropout(attn)
+        sample = self.linear_2(sample)
+        sample = self.act(sample)
+        return sample
 
-        out = torch.matmul(attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        return self.to_out(out)
 
-class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+class AgeSinCosEncoder(nn.Module):
+    """
+    年龄特征编码器（diffusion风格时间步嵌入 + 线性细化）：
+    - 将输入年龄视作“时间步”，用 Timesteps + TimestepEmbedding 生成高维向量
+    - 兼容 (B,) 或标量年龄输入
+    """
+    def __init__(self, embed_dim: int = 128, mean: float = 60.0, std: float = 20.0, max_period: float = 10000.0):
         super().__init__()
-        self.layers = nn.ModuleList([])
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout),
-                FeedForward(dim, mlp_dim, dropout = dropout)
-            ]))
-    def forward(self, x):
-        for attn, ff in self.layers:
-            x = attn(x) + x
-            x = ff(x) + x
-        return x
- 
+        assert embed_dim > 0, "embed_dim 必须为正数"
+        self.embed_dim = embed_dim
+        # diffusion-style sinusoidal embedding
+        self.time_proj = Timesteps(num_channels=embed_dim, flip_sin_to_cos=True, downscale_freq_shift=0.0)
+        self.time_embedding = TimestepEmbedding(in_channels=embed_dim, time_embed_dim=embed_dim)
+        # 可选线性细化
+        self.refine = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+
+    def forward(self, age: torch.Tensor) -> torch.Tensor:
+        """
+        age: (B,) 或标量的张量/数值，单位：岁
+        return: (B, embed_dim) 年龄嵌入
+        """
+        # 保证 age 为 (B,) 浮点 1D 张量
+        if not isinstance(age, torch.Tensor):
+            age = torch.tensor(age, dtype=torch.float32)
+        age = age.squeeze()
+        if age.dim() == 0:
+            age = age[None]
+        age = age.to(dtype=torch.float32)
+
+        # diffusion 风格时间步嵌入
+        t_emb = self.time_proj(age)              # (B, embed_dim)
+        emb = self.time_embedding(t_emb)         # (B, embed_dim)
+        return self.refine(emb)
+
+
 class MyModel(nn.Module):
-    """Lightweight 3D CNN for multi-label classification (returns logits)."""
+    """
+    ConvNeXt-Large DINOv3 适配 (32,384,384) 输入，并在每个阶段将 sin/cos 年龄嵌入“加到特征上”（Additive Conditioning）。
+    - 年龄 -> sin/cos 高维向量（类似 diffusion 的时间步嵌入）
+    - 在 ConvNeXt 的 4 个阶段输出后，线性映射到对应通道维，并以加法方式融合：
+      y = x + alpha * proj(age_emb)
+    """
+    def __init__(
+        self,
+        num_classes: int,
+        in_chans: int = 32,
+        pretrained: bool = False,
+        age_embed_dim: int = 128,
+        film_alpha: float = 0.1,
+    ):
+        super().__init__()
+        self.film_alpha = film_alpha
 
-    def __init__(self, num_classes: int = 14, dim: int = 1024, pool: str = 'cls', depth: int = 4, tranformer_depth: int = 4, heads = 8, dim_head = 64, mlp_dim = 2048, transformer_dropout = 0., emb_dropout = 0.):
-        super(MyModel, self).__init__()
-        assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
-        self.depth = depth
-        self.tranfomer_depth = tranformer_depth
+        # 2D 主干：ConvNeXt-Large DINOv3（可设 in_chans=32）
+        self.backbone = timm.create_model(
+            'convnext_large.dinov3_lvd1689m',
+            pretrained=pretrained,
+            num_classes=num_classes,
+            in_chans=in_chans,
+        )
 
-        # 使用 depth 构建 CNN 块（ModuleList 包含 Conv3d、BN、ReLU、MaxPool3d 四者的顺序模块）
-        self.cnn_blocks = nn.ModuleList()
-        in_channels = 1
-        for i in range(self.depth):
-            out_channels = min(512, 32 * (2 ** i))
-            block = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
-                nn.BatchNorm3d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.MaxPool3d(2)
-            )
-            self.cnn_blocks.append(block)
-            in_channels = out_channels
-    
-        self.adaptive_pool = nn.AdaptiveAvgPool3d((2, 2, 2))
+        # 读取 2D 阶段通道数（4 个阶段）
+        assert hasattr(self.backbone, "feature_info"), "ConvNeXt 主干缺少 feature_info。"
+        self.stage_channels: List[int] = [fi["num_chs"] for fi in self.backbone.feature_info]
+        assert len(self.stage_channels) == 4, f"期望 4 个阶段，得到 {len(self.stage_channels)}。"
 
-        # CNN 输出通道与展平维度
-        self.cnn_out_channels = in_channels
-        self.flatten_dim = self.cnn_out_channels * 2 * 2 * 2
-        
-        if self.tranfomer_depth > 0: # Transformer
-            self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
-            self.pos_embedding = nn.Parameter(torch.randn(1, 2, dim))
-            self.dropout = nn.Dropout(emb_dropout)
+        # 年龄编码器 + 各阶段 Additive 映射
+        self.age_encoder = AgeSinCosEncoder(embed_dim=age_embed_dim)
+        self.add_mlps = nn.ModuleList([nn.Linear(age_embed_dim, c) for c in self.stage_channels])
 
-            # 若 CNN 展平维度与 Transformer 预期 dim 不一致，添加线性投影
-            self.pre_transformer_proj = nn.Identity() if self.flatten_dim == dim else nn.Linear(self.flatten_dim, dim)
-
-            self.transformer = Transformer(dim, self.tranfomer_depth, heads, dim_head, mlp_dim, transformer_dropout)
-
-            self.pool = pool
-        
-        self.fc1 = nn.Linear(self.flatten_dim, 256)
-        self.dropout1 = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(256, 128)
-        self.dropout2 = nn.Dropout(0.3)
-        self.fc3 = nn.Linear(128, num_classes)
-
-    def freeze_transformer(self):
+    def forward(self, x: torch.Tensor, age: Union[torch.Tensor, int, float]) -> torch.Tensor:
         """
-        冻结 Transformer 子模块（仅在 self.tranfomer_depth > 0 时存在）以及 CLS/位置参数的梯度。
-        """
-        if self.tranfomer_depth > 0:
-            for p in self.transformer.parameters():
-                p.requires_grad = False
-            # cls_token 与 pos_embedding 是 nn.Parameter
-            self.cls_token.requires_grad = False
-            self.pos_embedding.requires_grad = False
+        输入：
+        - x: (B, 32, 384, 384) 多切片 2D 体图
+        - age: (B,) 张量或 Python 标量（int/float），单位：岁
 
-    def unfreeze_transformer(self):
+        输出：
+        - logits: (B, num_classes)
         """
-        解冻 Transformer 子模块（仅在 self.tranfomer_depth > 0 时存在）以及 CLS/位置参数的梯度。
-        """
-        if self.tranfomer_depth > 0:
-            for p in self.transformer.parameters():
-                p.requires_grad = True
-            self.cls_token.requires_grad = True
-            self.pos_embedding.requires_grad = True
+        # 检查输入通道与主干一致
+        in_chs_expected = self.backbone.stem[0].in_channels
+        assert x.dim() == 4 and x.shape[1] == in_chs_expected, f"期望输入形状为 (B, {in_chs_expected}, H, W)，得到 {tuple(x.shape)}"
 
-    def freeze_cnn_classifier(self):
-        """
-        冻结卷积/BN 以及分类头（全连接层）的梯度。
-        说明：池化层与 Dropout 没有可训练参数，忽略即可。
-        """
-        modules = [*self.cnn_blocks, self.fc1, self.fc2, self.fc3]
-        for m in modules:
-            for p in m.parameters():
-                p.requires_grad = False
+        # 处理年龄输入为 (B,) float tensor
+        if not isinstance(age, torch.Tensor):
+            age = torch.tensor(age, dtype=x.dtype, device=x.device).repeat(x.shape[0])
+        else:
+            age = age.to(dtype=x.dtype, device=x.device)
+            if age.dim() == 0:
+                age = age.repeat(x.shape[0])
 
-    def unfreeze_cnn_classifier(self):
-        """
-        解冻卷积/BN 以及分类头（全连接层）的梯度。
-        """
-        modules = [*self.cnn_blocks, self.fc1, self.fc2, self.fc3]
-        for m in modules:
-            for p in m.parameters():
-                p.requires_grad = True
+        # 年龄嵌入
+        age_feat = self.age_encoder(age)  # (B, age_embed_dim)
 
-    def save_cnn_classifier_weights(self, path: str) -> None:
-        """
-        仅保存 CNN + 分类头（fc1, fc2, fc3）权重到文件。
-        保存为 state_dict(dict)，包含 BN 的 running stats 等缓冲区；不包含 Transformer 相关参数。
-        """
-        container = nn.ModuleDict({
-            'cnn_blocks': self.cnn_blocks,
-            'fc1': self.fc1,
-            'fc2': self.fc2,
-            'fc3': self.fc3,
-        })
-        state = container.state_dict()
-        # 将张量转为 CPU，避免跨设备问题
-        state_cpu = {k: v.detach().cpu() for k, v in state.items()}
-        torch.save(state_cpu, path)
+        # 2D 干部分阶段前向 + Additive 融合
+        x2d = self.backbone.stem(x)
+        for i, stage in enumerate(self.backbone.stages):
+            x2d = stage(x2d)
+            add_vec = self.add_mlps[i](age_feat)  # (B, C_i)
+            x2d = x2d + self.film_alpha * add_vec.unsqueeze(-1).unsqueeze(-1)
 
-    def load_cnn_classifier_weights(self, path: str, strict: bool = True) -> None:
-        """
-        从文件加载 CNN + 分类头（fc1, fc2, fc3）权重。
-        - strict: 是否严格匹配键名。
-        - 自动兼容常见前缀（如 DataParallel 的 'module.' 或外层 'model.'）。
-        """
-        sd = torch.load(path, map_location='cpu')
-        if isinstance(sd, dict) and 'state_dict' in sd and isinstance(sd['state_dict'], dict):
-            sd = sd['state_dict']
+        # 末端归一化 + 分类头
+        x2d = self.backbone.norm_pre(x2d)
+        logits = self.backbone.forward_head(x2d)
+        return logits
 
-        # 去除常见的前缀，避免键名不一致
-        if any(k.startswith('module.') for k in sd.keys()):
-            sd = { (k[7:] if k.startswith('module.') else k): v for k, v in sd.items() }
-        if any(k.startswith('model.') for k in sd.keys()):
-            sd = { (k[6:] if k.startswith('model.') else k): v for k, v in sd.items() }
 
-        container = nn.ModuleDict({
-            'cnn_blocks': self.cnn_blocks,
-            'fc1': self.fc1,
-            'fc2': self.fc2,
-            'fc3': self.fc3,
-        })
-        container.load_state_dict(sd, strict=strict)
-    def forward(self, x):
-        # x: (B,1,D,H,W)
-        # 根据 depth 用 for 遍历 CNN 块（ModuleList 包含 Conv+BN+ReLU+Pool）
-        for block in self.cnn_blocks:
-            x = block(x)
-        x = self.adaptive_pool(x)
-        x = x.view(x.size(0), -1)
-        
-        if self.tranfomer_depth > 0: # Transformer
-            x = self.pre_transformer_proj(x)
-            x = x.unsqueeze(1)
-            b, n, _ = x.shape
-            cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
-            x = torch.cat((cls_tokens, x), dim=1)
-            x += self.pos_embedding[:, :(n + 1)]
-            x = self.dropout(x)
-            x = self.transformer(x)
-            x = x.mean(dim = 1) if self.pool == 'mean' else x[:, 0]
-        
-        x = F.relu(self.fc1(x)); x = self.dropout1(x)
-        x = F.relu(self.fc2(x)); x = self.dropout2(x)
-        x = self.fc3(x)  # logits
-        return x
-
-if __name__ == '__main__':
-    torch.manual_seed(42)
-    
-    # 检查CUDA是否可用
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 打印当前GPU的使用情况
-    if device.type == 'cuda':
-        print(f"GPU Available: {torch.cuda.get_device_name(0)}")
-        print(f"Total Memory: {torch.cuda.get_device_properties(0).total_memory / (1024 ** 3):.2f} GB")
-        print(f"Allocated Memory: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
-        print(f"Cached Memory: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
+def print_gpu_info(prefix: str = "") -> None:
+    """
+    简单输出 GPU 监控信息：
+    - 设备索引与名称
+    - 当前已分配显存（allocated）
+    - 当前已保留显存（reserved）
+    - 设备总显存（total）
+    当 CUDA 不可用时打印提示。
+    """
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        dev = torch.cuda.current_device()
+        props = torch.cuda.get_device_properties(dev)
+        name = torch.cuda.get_device_name(dev)
+        mem_alloc = torch.cuda.memory_allocated(dev) / (1024 ** 2)
+        mem_reserved = torch.cuda.memory_reserved(dev) / (1024 ** 2)
+        mem_total = props.total_memory / (1024 ** 2)
+        print(f"[GPU] {prefix} | idx={dev} name={name} | alloc={mem_alloc:.1f}MB reserved={mem_reserved:.1f}MB total={mem_total:.0f}MB")
     else:
-        print("CUDA not available, using CPU.")
+        print("[GPU] CUDA not available")
+        
+if __name__ == '__main__':
+    # 简单自测 + GPU 监控
+    torch.manual_seed(0)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print_gpu_info("startup")
 
-    # Initialize model and move to appropriate device
-    model = MyModel(num_classes=14,depth=5,tranformer_depth=0,transformer_dropout=0.)
-    # sd = torch.load('model_best.pth')
-    # if any(k.startswith('module.') for k in sd.keys()):
-    #     sd = { (k[7:] if k.startswith('module.') else k): v for k, v in sd.items() }
-    # model.load_state_dict(sd)
-    
-    # model.freeze_cnn_classifier()
-    # model.freeze_transformer()
-    # 在 main 中输出当前可训练参数量
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable params: {trainable_params:,}")
-    
-    # model.unfreeze_cnn_classifier()
-    # model.unfreeze_transformer()
-    
-    # model.save_cnn_classifier_weights('cnn_classifier_weights.pth')
-    # model.load_cnn_classifier_weights('cnn_classifier_weights.pth',strict=True)
-    
-    model = model.to(device)
+    model = MyModel(num_classes=14, in_chans=32, pretrained=False).to(device)
+    print_gpu_info("after model.to(device)")
 
-    # Load the saved model weights
-    # model.load_state_dict(torch.load('model_best.pth'))
+    x = torch.randn(1, 32, 384, 384, device=device)
+    age = torch.tensor([55.0], device=device)
+    print_gpu_info("after inputs allocated")
 
-    # Set the model to evaluation mode
-    model.eval()
+    with torch.no_grad():
+        y = model(x, age)
 
-    # Check memory usage before forward pass
-    if device.type == 'cuda':
-        print(f"Allocated Memory before operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
-        print(f"Cached Memory before operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
-    
-    # Create a dummy image tensor
-    image = torch.randn(1, 1, 32, 384, 384).to(device)
-
-    # Run forward pass
-    output = model(image)
-    
-    # Apply sigmoid activation
-    print(F.sigmoid(output))
-
-    # Check and print GPU memory usage after the operation
-    if device.type == 'cuda':
-        print(f"Allocated Memory after operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
-        print(f"Cached Memory after operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
-
+    print("logits shape:", y.shape)
+    print_gpu_info("after forward")

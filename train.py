@@ -510,22 +510,30 @@ def main():
             num_classes=-1,  # force head adaptation
         )
 
-    model = create_model(
-        args.model,
-        pretrained=args.pretrained,
-        in_chans=in_chans,
-        num_classes=args.num_classes,
-        drop_rate=args.drop,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=args.drop_block,
-        global_pool=args.gp,
-        bn_momentum=args.bn_momentum,
-        bn_eps=args.bn_eps,
-        scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint,
-        **factory_kwargs,
-        **args.model_kwargs,
-    )
+    if args.model == 'MyModel':
+        # 直接使用自定义 MyModel，并传入 in_chans 与 num_classes（None 则使用 0 表示无分类头）
+        model = MyModel(
+            num_classes=args.num_classes if args.num_classes is not None else 0,
+            in_chans=in_chans,
+            pretrained=args.pretrained,
+        )
+    else:
+        model = create_model(
+            args.model,
+            pretrained=args.pretrained,
+            in_chans=in_chans,
+            num_classes=args.num_classes,
+            drop_rate=args.drop,
+            drop_path_rate=args.drop_path,
+            drop_block_rate=args.drop_block,
+            global_pool=args.gp,
+            bn_momentum=args.bn_momentum,
+            bn_eps=args.bn_eps,
+            scriptable=args.torchscript,
+            checkpoint_path=args.initial_checkpoint,
+            **factory_kwargs,
+            **args.model_kwargs,
+        )
     # 使用安全的 getattr 以兼容未在 argparse 中显式声明的字段
     # model = MyModel(
     #     num_classes=args.num_classes,
@@ -544,18 +552,22 @@ def main():
         model.load_cnn_classifier_weights(args.cnn_classifier_weights_path, strict=True)
         model.freeze_cnn_classifier()
         
-    if args.head_init_scale is not None:
+    if args.head_init_scale is not None and hasattr(model, 'get_classifier'):
         with torch.no_grad():
             model.get_classifier().weight.mul_(args.head_init_scale)
             model.get_classifier().bias.mul_(args.head_init_scale)
-    if args.head_init_bias is not None:
+    if args.head_init_bias is not None and hasattr(model, 'get_classifier'):
         nn.init.constant_(model.get_classifier().bias, args.head_init_bias)
 
     if args.num_classes is None:
-        assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
-        args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
+        if hasattr(model, 'num_classes'):
+            args.num_classes = model.num_classes
+        elif hasattr(model, 'backbone') and hasattr(model.backbone, 'num_classes'):
+            args.num_classes = model.backbone.num_classes
+        else:
+            raise AssertionError('Model must have `num_classes` or `backbone.num_classes` attr if not set on cmd line/config.')
 
-    if args.grad_checkpointing:
+    if args.grad_checkpointing and hasattr(model, 'set_grad_checkpointing'):
         model.set_grad_checkpointing(enable=True)
 
     if utils.is_primary(args):
@@ -1177,7 +1189,18 @@ def train_one_epoch(
     data_start_time = update_start_time = time.time()
     optimizer.zero_grad()
     update_sample_count = 0
-    for batch_idx, (input, target) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
+        # 支持 (input, age, target) 三元组或原有二元组
+        if isinstance(batch, (tuple, list)):
+            if len(batch) == 3:
+                input, age, target = batch
+            else:
+                input, target = batch
+                age = None
+        else:
+            input, target = batch
+            age = None
+
         last_batch = batch_idx == last_batch_idx
         need_update = last_batch or (batch_idx + 1) % accum_steps == 0
         update_idx = batch_idx // accum_steps
@@ -1186,6 +1209,8 @@ def train_one_epoch(
 
         if not args.prefetcher:
             input, target = input.to(device=device, dtype=model_dtype), target.to(device=device)
+            if isinstance(age, torch.Tensor):
+                age = age.to(device=device)
             if mixup_fn is not None:
                 input, target = mixup_fn(input, target)
         if args.channels_last:
@@ -1196,7 +1221,7 @@ def train_one_epoch(
 
         def _forward():
             with amp_autocast():
-                output = model(input)
+                output = model(input, age) if age is not None else model(input)
                 _loss = loss_fn(output, target)
             if accum_steps > 1:
                 _loss /= accum_steps
@@ -1368,16 +1393,29 @@ def validate(
     end = time.time()
     last_idx = len(loader) - 1
     with torch.inference_mode():
-        for batch_idx, (input, target) in enumerate(loader):
+        for batch_idx, batch in enumerate(loader):
+            # 支持 (input, age, target) 三元组或原有二元组
+            if isinstance(batch, (tuple, list)):
+                if len(batch) == 3:
+                    input, age, target = batch
+                else:
+                    input, target = batch
+                    age = None
+            else:
+                input, target = batch
+                age = None
+
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input = input.to(device=device, dtype=model_dtype)
                 target = target.to(device=device)
+                if isinstance(age, torch.Tensor):
+                    age = age.to(device=device)
             if args.channels_last:
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                output = model(input)
+                output = model(input, age) if age is not None else model(input)
                 if isinstance(output, (tuple, list)):
                     output = output[0]
 

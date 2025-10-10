@@ -1,229 +1,236 @@
+# import timm
 import torch
+from torch.functional import F
 from torch import nn
-import timm
-from timm.layers import NormMlpClassifierHead
-from typing import List, Optional
+from einops import rearrange,repeat
 
+# class MyModel(torch.nn.Module):
+#     def __init__(self, num_classes=1):
+#         super(MyModel, self).__init__()
+#         print(f"Initializing model...{num_classes}")
+#         self.timm_0 = timm.create_model(
+#             "tf_efficientnetv2_s.in21k_ft_in1k", 
+#             num_classes=num_classes, 
+#             pretrained=True,  # Don't load pretrained weights
+#             in_chans=32
+#         )
+        
+#     def forward(self, x):
+#         x = self.timm_0(x)
+#         return x
 
-class Conv3DStageFusion(nn.Module):
-    """
-    分阶段 3D 分支，用于在 ConvNeXt 每个阶段后进行特征融合（Affine/FiLM）。
-    - 输入: (B, 1, D, H, W)
-    - 经过 depth_3d 个 Conv3d-BN-ReLU-MaxPool3d 块；每个块后:
-        * 自适应池化到 (p, p, p)
-        * 展平 + 线性投影到 embed_dim_3d
-        * 经线性映射生成与 2D 阶段通道数匹配的 (gamma, beta) 用于 FiLM 融合
-    """
-    def __init__(
-        self,
-        stage_channels: List[int],       # ConvNeXt 四个阶段的通道数，如 [192, 384, 768, 1536]
-        in_chans_3d: int = 1,
-        depth_3d: Optional[int] = None,  # 默认为 len(stage_channels)
-        base_ch: int = 16,
-        max_ch: int = 256,
-        pool_out: int = 2,
-        embed_dim_3d: int = 512,
-        dropout: float = 0.1,
-    ):
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout = 0.):
         super().__init__()
-        self.stage_channels = stage_channels
-        self.depth_3d = depth_3d or len(stage_channels)
-        assert self.depth_3d == len(stage_channels), "3D 分支深度需与 2D 分支阶段数一致，以便逐阶段融合。"
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+    def forward(self, x):
+        return self.net(x)
 
-        # 3D 块序列
-        self.blocks = nn.ModuleList()
-        in_c = in_chans_3d
-        self.out_cs: List[int] = []
-        for i in range(self.depth_3d):
-            out_c = min(max_ch, base_ch * (2 ** i))
-            blk = nn.Sequential(
-                nn.Conv3d(in_c, out_c, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm3d(out_c),
-                nn.ReLU(inplace=True),
-                nn.MaxPool3d(kernel_size=2, stride=2),
-            )
-            self.blocks.append(blk)
-            self.out_cs.append(out_c)
-            in_c = out_c
+class Attention(nn.Module):
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+        super().__init__()
+        inner_dim = dim_head *  heads
+        project_out = not (heads == 1 and dim_head == dim)
 
-        self.pool = nn.AdaptiveAvgPool3d((pool_out, pool_out, pool_out))
+        self.heads = heads
+        self.scale = dim_head ** -0.5
 
-        # 每阶段：投影到 embed_dim_3d
-        self.stage_proj = nn.ModuleList()
-        for i in range(self.depth_3d):
-            flat_dim = self.out_cs[i] * (pool_out ** 3)
-            self.stage_proj.append(
-                nn.Sequential(
-                    nn.Linear(flat_dim, embed_dim_3d),
-                    nn.ReLU(inplace=True),
-                    nn.Dropout(dropout),
-                )
-            )
+        self.norm = nn.LayerNorm(dim)
+        self.attend = nn.Softmax(dim = -1)
+        self.dropout = nn.Dropout(dropout)
 
-        # 每阶段：从 embed_dim_3d 生成 gamma/beta 映射
-        self.affine_mappers = nn.ModuleList()
-        for i in range(self.depth_3d):
-            c2d = self.stage_channels[i]
-            self.affine_mappers.append(nn.Linear(embed_dim_3d, 2 * c2d))
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
 
-        # 记录最后阶段的嵌入（用于最终融合）
-        self.last_embed: Optional[torch.Tensor] = None
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        ) if project_out else nn.Identity()
 
-    def forward_stage(self, x3d: torch.Tensor, stage_idx: int):
-        """
-        前向单阶段:
-        - 应用第 stage_idx 个 3D 块
-        - 生成 embed, 再映射为 (gamma, beta)
-        返回: gamma (B, C_i), beta (B, C_i), x3d (更新后的特征), embed (B, embed_dim_3d)
-        """
-        x3d = self.blocks[stage_idx](x3d)
-        pooled = self.pool(x3d)
-        flat = pooled.view(pooled.size(0), -1)
-        embed = self.stage_proj[stage_idx](flat)
-        affine = self.affine_mappers[stage_idx](embed)
-        c2d = self.stage_channels[stage_idx]
-        gamma, beta = affine[:, :c2d], affine[:, c2d:]
-        if stage_idx == self.depth_3d - 1:
-            self.last_embed = embed
-        return gamma, beta, x3d, embed
+    def forward(self, x):
+        x = self.norm(x)
+        qkv = self.to_qkv(x).chunk(3, dim = -1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
 
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
 
+        attn = self.attend(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
+class Transformer(nn.Module):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout),
+                FeedForward(dim, mlp_dim, dropout = dropout)
+            ]))
+    def forward(self, x):
+        for attn, ff in self.layers:
+            x = attn(x) + x
+            x = ff(x) + x
+        return x
+ 
 class MyModel(nn.Module):
-    """
-    分阶段融合版：ConvNeXt-Large DINOv3 2D 分支 + 3D 分支
-    - 在 ConvNeXt 四个阶段后，使用 3D 分支生成的 (gamma, beta) 对 2D 特征做通道级 FiLM 融合
-      x2d <- x2d * (1 + alpha * tanh(gamma)) + beta
-    - 最终取 ConvNeXt pre_logits 向量与 3D 最终嵌入向量拼接，经过分类头输出 logits（BCEWithLogits）
-    """
-    def __init__(
-        self,
-        num_classes: int = 14,
-        in_chans: int = 32,                          # 切片数作为 2D 分支通道数
-        pretrained: bool = False,
-        backbone_name: str = "convnext_large.dinov3_lvd1689m",
-        # 2D/3D 末端融合投影维度
-        embed_dim_2d: int = 512,
-        embed_dim_3d: int = 512,
-        # 3D 分支结构
-        depth_3d: Optional[int] = None,              # 默认为 ConvNeXt 阶段数（通常为 4）
-        base_ch_3d: int = 16,
-        max_ch_3d: int = 256,
-        pool_out_3d: int = 2,
-        dropout_3d: float = 0.1,
-        # 分阶段融合强度
-        fusion_alpha: float = 0.2,                   # FiLM 中 tanh(gamma) 的缩放系数
-        fusion_dropout: float = 0.2,
-    ):
-        super().__init__()
-        # 2D 主干
-        self.backbone = timm.create_model(
-            backbone_name,
-            pretrained=pretrained,
-            num_classes=0,        # 输出特征而非分类结果
-            in_chans=in_chans,
-        )
+    """Lightweight 3D CNN for multi-label classification (returns logits)."""
 
-        # 读取 2D 阶段通道数
-        assert hasattr(self.backbone, "feature_info"), "ConvNeXt 主干缺少 feature_info。"
-        self.stage_channels: List[int] = [fi["num_chs"] for fi in self.backbone.feature_info]
-        assert len(self.stage_channels) == 4, f"期望 4 个阶段，得到 {len(self.stage_channels)}。"
+    def __init__(self, num_classes: int = 14, dim: int = 1024, pool: str = 'cls', depth: int = 4, tranformer_depth: int = 4, heads = 8, dim_head = 64, mlp_dim = 2048, transformer_dropout = 0., emb_dropout = 0.):
+        super(MyModel, self).__init__()
+        assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
+        self.depth = depth
+        self.tranfomer_depth = tranformer_depth
 
-        # 3D 分支（分阶段）
-        self.branch3d = Conv3DStageFusion(
-            stage_channels=self.stage_channels,
-            in_chans_3d=1,
-            depth_3d=depth_3d or len(self.stage_channels),
-            base_ch=base_ch_3d,
-            max_ch=max_ch_3d,
-            pool_out=pool_out_3d,
-            embed_dim_3d=embed_dim_3d,
-            dropout=dropout_3d,
-        )
+        # 使用 depth 构建 CNN 块（ModuleList 包含 Conv3d、BN、ReLU、MaxPool3d 四者的顺序模块）
+        self.cnn_blocks = nn.ModuleList()
+        in_channels = 1
+        for i in range(self.depth):
+            out_channels = min(256, 32 * (2 ** i))
+            block = nn.Sequential(
+                nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm3d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.MaxPool3d(2)
+            )
+            self.cnn_blocks.append(block)
+            in_channels = out_channels
+    
+        self.adaptive_pool = nn.AdaptiveAvgPool3d((2, 2, 2))
 
-        # 2D pre_logits -> embed_dim_2d
-        # 从 ConvNeXt 取 pre_logits，先 LayerNorm 再线性映射
-        feat2d_dim = getattr(self.backbone, "head_hidden_size", None)
-        if not feat2d_dim or feat2d_dim == 0:
-            feat2d_dim = getattr(self.backbone, "num_features", None)
-        if not feat2d_dim:
-            raise RuntimeError("无法确定 ConvNeXt 主干的特征维度（head_hidden_size / num_features 均不可用）")
-        self.proj2d = nn.Sequential(
-            nn.LayerNorm(feat2d_dim),
-            nn.Linear(feat2d_dim, embed_dim_2d),
-            nn.ReLU(inplace=True),
-        )
+        # CNN 输出通道与展平维度
+        self.cnn_out_channels = in_channels
+        self.flatten_dim = self.cnn_out_channels * 2 * 2 * 2
+        
+        if self.tranfomer_depth > 0: # Transformer
+            self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+            self.pos_embedding = nn.Parameter(torch.randn(1, 2, dim))
+            self.dropout = nn.Dropout(emb_dropout)
 
-        # 末端分类头（拼接 2D/3D 向量），沿用 timm 的 NormMlpClassifierHead
-        fusion_dim = embed_dim_2d + embed_dim_3d
-        self.classifier = NormMlpClassifierHead(
-            in_features=fusion_dim,
-            num_classes=num_classes,
-            hidden_size=None,
-            pool_type='avg',              # 保持与 ConvNeXt 默认一致：池化->归一化->MLP
-            drop_rate=fusion_dropout,
-            norm_layer='layernorm2d',
-            act_layer='gelu',             # 与 ConvNeXt 的 head act 对齐
-        )
+            # 若 CNN 展平维度与 Transformer 预期 dim 不一致，添加线性投影
+            self.pre_transformer_proj = nn.Identity() if self.flatten_dim == dim else nn.Linear(self.flatten_dim, dim)
 
-        self.fusion_alpha = fusion_alpha
+            self.transformer = Transformer(dim, self.tranfomer_depth, heads, dim_head, mlp_dim, transformer_dropout)
 
-    def _film(self, x2d: torch.Tensor, gamma: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
+            self.pool = pool
+        
+        self.fc1 = nn.Linear(self.flatten_dim, 256)
+        self.dropout1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(256, 128)
+        self.dropout2 = nn.Dropout(0.3)
+        self.fc3 = nn.Linear(128, num_classes)
+
+    def freeze_transformer(self):
         """
-        通道级 FiLM 融合：
-        y = x * (1 + alpha * tanh(gamma)) + beta
+        冻结 Transformer 子模块（仅在 self.tranfomer_depth > 0 时存在）以及 CLS/位置参数的梯度。
         """
-        scale = 1.0 + torch.tanh(gamma) * self.fusion_alpha
-        y = x2d * scale.unsqueeze(-1).unsqueeze(-1) + beta.unsqueeze(-1).unsqueeze(-1)
-        return y
+        if self.tranfomer_depth > 0:
+            for p in self.transformer.parameters():
+                p.requires_grad = False
+            # cls_token 与 pos_embedding 是 nn.Parameter
+            self.cls_token.requires_grad = False
+            self.pos_embedding.requires_grad = False
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def unfreeze_transformer(self):
         """
-        前向：
-        - 输入 x: (B, C, H, W)，其中 C=切片数（例如 32）
-        - 输出 logits: (B, num_classes)
+        解冻 Transformer 子模块（仅在 self.tranfomer_depth > 0 时存在）以及 CLS/位置参数的梯度。
         """
-        assert x.dim() == 4, f"期望输入形状为 (B, C, H, W)，得到 {tuple(x.shape)}"
+        if self.tranfomer_depth > 0:
+            for p in self.transformer.parameters():
+                p.requires_grad = True
+            self.cls_token.requires_grad = True
+            self.pos_embedding.requires_grad = True
 
-        # 2D 干部分阶段前向 + 融合
-        x2d = self.backbone.stem(x)
-        x3d = x.unsqueeze(1)  # (B, 1, D(=C), H, W)
-        for i, stage in enumerate(self.backbone.stages):
-            x2d = stage(x2d)
-            gamma, beta, x3d, _embed_i = self.branch3d.forward_stage(x3d, i)
-            x2d = self._film(x2d, gamma, beta)
-
-        # 2D 末端归一化 + 提取 pre_logits
-        x2d = self.backbone.norm_pre(x2d)
-        z2d = self.backbone.forward_head(x2d, pre_logits=True)  # (B, feat2d_dim)
-        z2d = self.proj2d(z2d)                                  # (B, embed_dim_2d)
-
-        # 3D 最终嵌入
-        z3d = self.branch3d.last_embed
-        assert z3d is not None, "3D 分支最后嵌入不存在，请检查 forward_stage 调用。"
-
-        # 末端融合与分类（logits）
-        z = torch.cat([z2d, z3d], dim=1)          # (B, fusion_dim)
-        z_nchw = z.unsqueeze(-1).unsqueeze(-1)    # 适配 NormMlpClassifierHead 的 NCHW 输入 (B, C, 1, 1)
-        logits = self.classifier(z_nchw)          # (B, num_classes)
-        return logits
-
-    # ===== 训练阶段的可选冻结接口 =====
-    def freeze_backbone(self, train_norm: bool = False):
+    def freeze_cnn_classifier(self):
         """
-        冻结 2D 主干参数；若 train_norm=True，保留正则化层参数可训练。
+        冻结卷积/BN 以及分类头（全连接层）的梯度。
+        说明：池化层与 Dropout 没有可训练参数，忽略即可。
         """
-        for p in self.backbone.parameters():
-            p.requires_grad = False
-        if train_norm:
-            for m in self.backbone.modules():
-                if isinstance(m, (nn.BatchNorm2d, nn.LayerNorm, nn.GroupNorm)):
-                    for p in m.parameters(recurse=False):
-                        p.requires_grad = True
+        modules = [*self.cnn_blocks, self.fc1, self.fc2, self.fc3]
+        for m in modules:
+            for p in m.parameters():
+                p.requires_grad = False
 
-    def unfreeze_backbone(self):
-        """解冻 2D 主干参数。"""
-        for p in self.backbone.parameters():
-            p.requires_grad = True
+    def unfreeze_cnn_classifier(self):
+        """
+        解冻卷积/BN 以及分类头（全连接层）的梯度。
+        """
+        modules = [*self.cnn_blocks, self.fc1, self.fc2, self.fc3]
+        for m in modules:
+            for p in m.parameters():
+                p.requires_grad = True
+
+    def save_cnn_classifier_weights(self, path: str) -> None:
+        """
+        仅保存 CNN + 分类头（fc1, fc2, fc3）权重到文件。
+        保存为 state_dict(dict)，包含 BN 的 running stats 等缓冲区；不包含 Transformer 相关参数。
+        """
+        container = nn.ModuleDict({
+            'cnn_blocks': self.cnn_blocks,
+            'fc1': self.fc1,
+            'fc2': self.fc2,
+            'fc3': self.fc3,
+        })
+        state = container.state_dict()
+        # 将张量转为 CPU，避免跨设备问题
+        state_cpu = {k: v.detach().cpu() for k, v in state.items()}
+        torch.save(state_cpu, path)
+
+    def load_cnn_classifier_weights(self, path: str, strict: bool = True) -> None:
+        """
+        从文件加载 CNN + 分类头（fc1, fc2, fc3）权重。
+        - strict: 是否严格匹配键名。
+        - 自动兼容常见前缀（如 DataParallel 的 'module.' 或外层 'model.'）。
+        """
+        sd = torch.load(path, map_location='cpu')
+        if isinstance(sd, dict) and 'state_dict' in sd and isinstance(sd['state_dict'], dict):
+            sd = sd['state_dict']
+
+        # 去除常见的前缀，避免键名不一致
+        if any(k.startswith('module.') for k in sd.keys()):
+            sd = { (k[7:] if k.startswith('module.') else k): v for k, v in sd.items() }
+        if any(k.startswith('model.') for k in sd.keys()):
+            sd = { (k[6:] if k.startswith('model.') else k): v for k, v in sd.items() }
+
+        container = nn.ModuleDict({
+            'cnn_blocks': self.cnn_blocks,
+            'fc1': self.fc1,
+            'fc2': self.fc2,
+            'fc3': self.fc3,
+        })
+        container.load_state_dict(sd, strict=strict)
+    def forward(self, x):
+        # x: (B,1,D,H,W)
+        # 根据 depth 用 for 遍历 CNN 块（ModuleList 包含 Conv+BN+ReLU+Pool）
+        for block in self.cnn_blocks:
+            x = block(x)
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+        
+        if self.tranfomer_depth > 0: # Transformer
+            x = self.pre_transformer_proj(x)
+            x = x.unsqueeze(1)
+            b, n, _ = x.shape
+            cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+            x = torch.cat((cls_tokens, x), dim=1)
+            x += self.pos_embedding[:, :(n + 1)]
+            x = self.dropout(x)
+            x = self.transformer(x)
+            x = x.mean(dim = 1) if self.pool == 'mean' else x[:, 0]
+        
+        x = F.relu(self.fc1(x)); x = self.dropout1(x)
+        x = F.relu(self.fc2(x)); x = self.dropout2(x)
+        x = self.fc3(x)  # logits
+        return x
 
 if __name__ == '__main__':
     torch.manual_seed(42)
@@ -285,5 +292,3 @@ if __name__ == '__main__':
     if device.type == 'cuda':
         print(f"Allocated Memory after operation: {torch.cuda.memory_allocated(0) / (1024 ** 3):.2f} GB")
         print(f"Cached Memory after operation: {torch.cuda.memory_reserved(0) / (1024 ** 3):.2f} GB")
-
-

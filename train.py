@@ -552,6 +552,8 @@ def main():
         fusion_alpha=0.2,
         fusion_dropout=0.2,
     )
+    model.load_state_dict(torch.load(args.rusume))
+    print(f"Resume from {args.rusume}")
     # model.freeze_backbone()
     if getattr(args, 'transformer_depth', 0) > 0 and getattr(args, 'cnn_classifier_weights_path', None):
         model.load_cnn_classifier_weights(args.cnn_classifier_weights_path, strict=True)

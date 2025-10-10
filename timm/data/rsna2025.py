@@ -68,6 +68,7 @@ class RSNADataset(Dataset):
         # 初始化一些变量
         self.series_paths = []  # 存储图像序列的路径
         self.labels = []        # 存储标签
+        self.ages = []          # 存储年龄（来自 train_csv 的 PatientAge 列）
         self.use_cache = use_cache
         self.target_shape = target_shape
         
@@ -107,8 +108,17 @@ class RSNADataset(Dataset):
         for uid in tqdm(self.selected_uids, desc='Loading DICOM series'):
             image = self._load_image(os.path.join(series_dir, f'{uid}.npy'))
             # image = self._load_image(os.path.join(series_dir, uid))
-            # np.save(f'kaggle/working/preprogress/series/{uid}.npy', image)  
+            # np.save(f'kaggle/working/preprogress/series/{uid}.npy', image)
             labels = self.sample_df[self.sample_df['SeriesInstanceUID'] == uid][self.LABEL_COLS].values
+
+            # 简单读取 PatientAge 列（按列名直接取值并转为 float，异常时回退为 60.0）
+            age_val = self.sample_df.loc[self.sample_df['SeriesInstanceUID'] == uid, 'PatientAge'].values
+            age_val = age_val[0] if len(age_val) > 0 else 60.0
+            try:
+                age_val = float(age_val)
+            except Exception:
+                age_val = 60.0
+            self.ages.append(age_val)
             
             # 如果使用缓存，则将图像和标签存储到内存
             if self.use_cache:
@@ -150,5 +160,7 @@ class RSNADataset(Dataset):
         
         # 将标签转换为 tensor
         labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze(0)
+        # 年龄 tensor（来自 PatientAge 列）
+        age_tensor = torch.tensor(self.ages[idx], dtype=torch.float32)
         
-        return volume, labels_tensor
+        return volume, age_tensor, labels_tensor

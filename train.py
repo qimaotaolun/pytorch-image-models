@@ -527,76 +527,19 @@ def main():
     #     **args.model_kwargs,
     # )
     # 使用安全的 getattr 以兼容未在 argparse 中显式声明的字段
-    # model = MyModel(
-    #     num_classes=args.num_classes,
-    #     # in_chans=getattr(args, 'in_chans', 1),
-    #     depth=getattr(args, 'depth', None),
-    #     tranformer_depth=getattr(args, 'transformer_depth', None),
-    #     transformer_dropout=getattr(args, 'transformer_dropout', None),
-    # )
+    model = MyModel(
+        num_classes=args.num_classes,
+        # in_chans=getattr(args, 'in_chans', 1),
+        depth=getattr(args, 'depth', None),
+        tranformer_depth=getattr(args, 'transformer_depth', None),
+        transformer_dropout=getattr(args, 'transformer_dropout', None),
+    )
     # model = create_tf_efficientnetv2_s_3d_sigmoid(num_classes=args.num_classes, 
     #                                               in_chans=getattr(args, 'in_chans', 1), 
     #                                               pretrained=getattr(args, 'pretrained', False), 
     #                                               kd=3, 
     #                                               reduce='mean', 
     #                                               stem_in_chans_2d=32)
-    model = MyModel(
-        num_classes=14,
-        in_chans=32,
-        pretrained=False,
-        embed_dim_2d=512,
-        embed_dim_3d=512,
-        base_ch_3d=16,
-        max_ch_3d=256,
-        pool_out_3d=2,
-        fusion_alpha=0.2,
-        fusion_dropout=0.2,
-    )
-    # Robust checkpoint loading:
-    # - 仅加载与当前模型匹配的参数（形状一致）
-    # - 自动去除 'module.' 前缀
-    # - 如检测到裸 ConvNeXt 的 key（例如 'stem.*', 'stages.*'），自动映射为 'backbone.*'
-    # - 使用 strict=False 避免报错，忽略不存在的自定义头和 3D 分支（proj2d, classifier, branch3d 等）
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location='cpu')
-        state = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
-
-        # 规范化 + 映射
-        norm_state = OrderedDict()
-        if isinstance(state, dict):
-            for k, v in state.items():
-                if not isinstance(k, str):
-                    continue
-                k2 = k[7:] if k.startswith('module.') else k  # strip 'module.' 前缀
-
-                # 如果 key 已经包含 'backbone.'，直接保留；否则尝试将典型 ConvNeXt 层映射到 'backbone.'
-                if k2.startswith('backbone.'):
-                    mapped = k2
-                elif k2.startswith(('stem.', 'stages.', 'norm_pre', 'downsample_layers.', 'head.', 'head.fc', 'head.norm')):
-                    mapped = f'backbone.{k2}'
-                else:
-                    # 其他保持原样（以便可能匹配到例如 'classifier.*' 或第三方保存风格）
-                    mapped = k2
-
-                norm_state[mapped] = v
-        else:
-            norm_state = state  # 非 dict 的情况直接透传
-
-        # 仅挑选可匹配且形状一致的键
-        cur_state = model.state_dict()
-        filtered = OrderedDict((k, v) for k, v in norm_state.items() if k in cur_state and cur_state[k].shape == v.shape)
-
-        unexpected = [k for k in norm_state.keys() if k not in cur_state]
-        missing = [k for k in cur_state.keys() if k not in filtered]
-
-        print(f"[CKPT] matched={len(filtered)}, unexpected={len(unexpected)}, missing={len(missing)} (missing/unexpected将被忽略)")
-        # 使用 strict=False，避免报错
-        model.load_state_dict(filtered, strict=False)
-        print(f"[CKPT] Loaded (partial) weights from {args.resume} with strict=False")
-
-        # 防止后续再次由 timm.utils.resume_checkpoint 重复加载，引发严格匹配报错
-        args.resume = ''
-    # model.freeze_backbone()
     if getattr(args, 'transformer_depth', 0) > 0 and getattr(args, 'cnn_classifier_weights_path', None):
         model.load_cnn_classifier_weights(args.cnn_classifier_weights_path, strict=True)
         model.freeze_cnn_classifier()

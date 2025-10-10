@@ -552,8 +552,6 @@ def main():
         fusion_alpha=0.2,
         fusion_dropout=0.2,
     )
-    model.load_state_dict(torch.load(args.resume))
-    print(f"Resume from {args.resume}")
     # model.freeze_backbone()
     if getattr(args, 'transformer_depth', 0) > 0 and getattr(args, 'cnn_classifier_weights_path', None):
         model.load_cnn_classifier_weights(args.cnn_classifier_weights_path, strict=True)
@@ -710,7 +708,12 @@ def main():
                 _logger.info("Using native Torch DistributedDataParallel.")
             model = NativeDDP(model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb)
         # NOTE: EMA model does not need to be wrapped by DDP
-
+        
+        
+    model.load_state_dict(torch.load(args.resume))
+    print(f"Resume from {args.resume}")
+    
+    
     if args.torchcompile:
         # torch compile should be done after DDP
         assert has_compile, 'A version of torch w/ torch.compile() is required for --compile, possibly a nightly.'

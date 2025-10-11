@@ -20,43 +20,15 @@ def get_inference_transform():
     ])
 
 def get_train_transform():
-    """获取训练时的预处理变换（参考 DINOv3 的增强思想，结合医学影像适配）
-    
-    对齐思路：
-    - 使用 RandomResizedCrop 模拟 DINO 的多尺度随机裁剪（全局裁剪比例约 (0.25, 1.0)）
-    - 去除大角度旋转与强几何畸变，保持与 DINO 一致的几何增广（裁剪 + 可选翻转）
-    - 使用两条强度增广路径的 OneOf，分别模拟 DINO 的 global_transfo1 / global_transfo2
-      • 路径A：强对比/亮度抖动 + 高概率模糊（对应 DINO 的 global_transfo1 + GaussianBlur(p=1.0)）
-      • 路径B：弱模糊 + 伽马变化（对应 DINO 的 global_transfo2 中的轻模糊 + 太阳化的强度近似）
-    - 保留 CoarseDropout 作为 Cutout 类似正则
-    - 禁用水平翻转以避免“左/右”标签语义错误（如脑血管部位）
-    """
-    global_scale = (0.25, 1.0)  # DINO 常用的全局裁剪比例区间
-    local_like_pipelines = A.OneOf([
-        A.Compose([
-            A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=1.0),
-            A.GaussianBlur(blur_limit=(3, 9), sigma_limit=(0.1, 2.0), p=1.0),
-        ]),
-        A.Compose([
-            A.GaussianBlur(blur_limit=(3, 9), sigma_limit=(0.1, 2.0), p=0.1),
-            A.RandomGamma(gamma_limit=(80, 120), p=0.2),
-        ]),
-    ], p=1.0)
-
+    """获取训练时的预处理变换"""
     return A.Compose([
-        # 多尺度随机裁剪到目标尺寸，匹配 DINO 的 RandomResizedCrop 行为
-        A.RandomResizedCrop(height=CFG.size, width=CFG.size, scale=global_scale, ratio=(0.75, 1.3333333333)),
-        # 医学任务含左右标签，禁用水平翻转以避免标签语义错误（如需启用，需同步交换左右相关标签）
-        # A.HorizontalFlip(p=0.0),
-        # DINO 两条强度路径的近似（OneOf 强制二选一）
-        local_like_pipelines,
-        # 轻度高斯噪声
-        A.GaussNoise(var_limit=(5.0, 20.0), p=0.2),
-        # Cutout 风格的随机丢失区域，按尺寸自适应
-        A.CoarseDropout(max_holes=8, max_height=CFG.size // 24, max_width=CFG.size // 24, p=0.5),
-        # 归一化 + 转张量
-        A.Normalize(),
-        ToTensorV2(),
+        A.Resize(CFG.size, CFG.size),  # 调整图像大小
+        A.Blur(blur_limit=7, p=0.5),  # 随机模糊
+        A.OpticalDistortion(distort_limit=0.05, shift_limit=0.05, p=0.5),  # 随机光学畸变
+        A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=30, p=0.5),  # 随机平移、缩放和旋转
+        A.CoarseDropout(max_holes=8, max_height=16, max_width=16, p=0.5),  # 随机丢失区域
+        A.Normalize(),  # 归一化
+        ToTensorV2(),  # 转为 PyTorch Tensor
     ])
 
 class RSNADataset(Dataset):

@@ -80,6 +80,7 @@ class RSNADataset(Dataset):
             else:
                 self.transform = get_inference_transform()
         
+        
         # 5-fold交叉验证
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         self.fold_splits = list(kf.split(self.selected_uids))
@@ -101,10 +102,14 @@ class RSNADataset(Dataset):
         self.selected_uids = [self.selected_uids[i] for i in selected_idx]
         
         # 加载图像和标签
+        # if not os.path.exists('kaggle/working/preprogress/series'):
+        #     os.makedirs('kaggle/working/preprogress/series')
         for uid in tqdm(self.selected_uids, desc='Loading DICOM series'):
             image = self._load_image(os.path.join(series_dir, f'{uid}.npy'))
+            # image = self._load_image(os.path.join(series_dir, uid))
+            # np.save(f'kaggle/working/preprogress/series/{uid}.npy', image)  
             labels = self.sample_df[self.sample_df['SeriesInstanceUID'] == uid][self.LABEL_COLS].values
-
+            
             # 如果使用缓存，则将图像和标签存储到内存
             if self.use_cache:
                 self.series_paths.append(image)
@@ -116,6 +121,7 @@ class RSNADataset(Dataset):
         
     def _load_image(self, image_path):
         """加载图像的辅助函数。"""
+        # image = process_dicom_series_safe(image_path, self.target_shape)
         image = np.load(image_path)
         return image
     
@@ -135,8 +141,7 @@ class RSNADataset(Dataset):
             # 如果不使用缓存，加载图像
             image = self._load_image(series_path)
         
-        # Albumentations 期望输入为 (H, W, C)
-        image = image.transpose(1, 2, 0)
+        image = image.transpose(1, 2, 0)  # 转置以适应 PyTorch 的通道顺序 (C, H, W)
         # 如果有 transform，应用变换
         if self.transform:
             volume = self.transform(image=image)["image"]
@@ -146,5 +151,4 @@ class RSNADataset(Dataset):
         # 将标签转换为 tensor
         labels_tensor = torch.tensor(labels, dtype=torch.float32).squeeze(0)
         
-        # 返回仅 (volume, labels)，不再包含 age
         return volume, labels_tensor
